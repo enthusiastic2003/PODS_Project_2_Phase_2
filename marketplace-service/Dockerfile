@@ -12,4 +12,6 @@ COPY . .
 RUN mvn compile
 
 # Set entrypoint to run the application using Maven exec plugin
-ENTRYPOINT ["mvn", "exec:exec"]
+# ENTRYPOINT ["mvn", "exec:exec"]
+
+ENTRYPOINT ["mvn", "exec:java", "-Dexec.mainClass=com.example.QuickstartApp"]

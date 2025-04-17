@@ -128,12 +128,13 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.0.0</version>
                 <configuration>
-                    <executable>java</executable>
+                    <!-- <executable>java</executable>
                     <arguments>
                         <argument>-classpath</argument>
                         <classpath />
                         <argument>com.example.QuickstartApp</argument>
-                    </arguments>
+                    </arguments> -->
+                    <mainClass>com.example.QuickstartApp</mainClass>
                 </configuration>
             </plugin>
         </plugins>
