@@ -1,0 +1,244 @@
+package com.example.ImportantActors;
+
+import akka.actor.typed.ActorRef;
+import akka.actor.typed.Behavior;
+import akka.actor.typed.javadsl.*;
+import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
+import com.example.Responses.ProductFound;
+import com.example.Responses.ProductResponse;
+
+/**
+ * The Oneproduct actor represents a single product in an inventory system.
+ * It handles operations like checking product details, managing stock levels,
+ * and reserving inventory for orders.
+ *
+ * This actor is designed to work within an Akka Cluster Sharding context,
+ * where each product instance is a separate actor identified by its product ID.
+ */
+public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
+
+    /**
+     * Internal data structure that holds product information.
+     * Note that stock_quantity is mutable while other properties are immutable.
+     */
+    public static class Product {
+        public final Integer id;              // Unique product identifier
+        public final String name;             // Product name
+        public final String description;      // Product description
+        public final Integer price;           // Product price
+        public Integer stock_quantity;        // Current stock level - mutable
+
+        /**
+         * Constructor for Product data object.
+         */
+        public Product(Integer id, String name, String description, Integer price, Integer stock_quantity) {
+            this.id = id;
+            this.name = name;
+            this.description = description;
+            this.price = price;
+            this.stock_quantity = stock_quantity;
+        }
+    }
+
+    /**
+     * Base interface for all commands that this actor can handle.
+     * All command types must implement this marker interface.
+     */
+    public interface Command { }
+
+    /**
+     * Entity type key used for cluster sharding configuration.
+     * This allows the system to distribute product actors across the cluster.
+     */
+    public static final EntityTypeKey<Command> ENTITY_KEY =
+            EntityTypeKey.create(Command.class, "Oneproduct");
+
+    /**
+     * Command to reserve a specific quantity of stock for an order being processed.
+     * This is typically used in the first step of order processing before confirming payment.
+     */
+    public static class ReserveStock implements Command {
+        public final int quantity;                                      // Quantity to reserve
+        public final ActorRef<ProdResponses.ReservationResponse> replyTo;  // Actor to send the response to
+
+        public ReserveStock(int quantity, ActorRef<ProdResponses.ReservationResponse> replyTo) {
+            this.quantity = quantity;
+            this.replyTo = replyTo;
+        }
+    }
+
+    /**
+     * Command to release previously reserved stock, for example when an order is canceled.
+     * This makes the previously reserved quantity available for other orders.
+     */
+    public static class ReleaseReservation implements Command {
+        public final int quantity;    // Quantity to release back to available stock
+
+        public ReleaseReservation(int quantity) {
+            this.quantity = quantity;
+        }
+    }
+
+    /**
+     * Command to add units to the product's stock level.
+     * Used when new inventory arrives or for replenishment.
+     */
+    public static class AddToStock implements Command {
+        public final int add_amount;                              // Amount to add to stock
+        public final ActorRef<ProdResponses.AddStatus> replyTo;   // Actor to send response to
+
+        public AddToStock(int add_amount, ActorRef<ProdResponses.AddStatus> replyTo) {
+            this.add_amount = add_amount;
+            this.replyTo = replyTo;
+        }
+    }
+
+    /**
+     * Special command to add stock when handling deleted orders.
+     * This allows for direct communication with the OneDeleteOrder actor.
+     */
+    public static class AddToStockForDeleteOrder implements Command {
+        public final Integer add_amount;                     // Amount to add back to stock
+        public final ActorRef<OneDeleteOrder.Command> replyTo;  // DeleteOrder actor to notify
+
+        public AddToStockForDeleteOrder(Integer add_amount, ActorRef<OneDeleteOrder.Command> replyTo) {
+            this.add_amount = add_amount;
+            this.replyTo = replyTo;
+        }
+    }
+
+    /**
+     * Command to reduce the product's stock level.
+     * Used when finalizing orders or removing damaged inventory.
+     */
+    public static class SubtractFromStock implements Command {
+        public final int subtract_amount;                              // Amount to remove from stock
+        public final ActorRef<ProdResponses.SubtractStatus> replyTo;   // Actor to send response to
+
+        public SubtractFromStock(int subtract_amount, ActorRef<ProdResponses.SubtractStatus> replyTo) {
+            this.subtract_amount = subtract_amount;
+            this.replyTo = replyTo;
+        }
+    }
+
+    /**
+     * Command to retrieve the full product details.
+     * Used by UI components or other actors that need product information.
+     */
+    public static class GetProductDetails implements Command {
+        public final ActorRef<ProductResponse> replyTo;    // Actor to send product details to
+
+        public GetProductDetails(ActorRef<ProductResponse> replyTo) {
+            this.replyTo = replyTo;
+        }
+    }
+
+    // Internal state - the product this actor instance represents
+    private Product product;
+
+    /**
+     * Private constructor used with the factory method.
+     * Initializes the actor with a Product instance.
+     */
+    private Oneproduct(ActorContext<Command> context, Product product) {
+        super(context);
+        this.product = product;
+    }
+
+    /**
+     * Factory method to create a new Oneproduct actor behavior.
+     * This is the recommended way to instantiate Akka actors.
+     */
+    public static Behavior<Command> create(Product product) {
+        return Behaviors.setup(context -> new Oneproduct(context, product));
+    }
+
+    /**
+     * Defines how the actor responds to different command messages.
+     * This is the core message-handling logic of the actor.
+     */
+    @Override
+    public Receive<Command> createReceive() {
+        return newReceiveBuilder()
+                .onMessage(AddToStock.class, this::onAddToStock)
+                .onMessage(AddToStockForDeleteOrder.class, this::onAddToStockForDeleteOrder)
+                .onMessage(SubtractFromStock.class, this::onSubtractFromStock)
+                .onMessage(GetProductDetails.class, this::onGetProductDetails)
+                .onMessage(ReserveStock.class, cmd -> {
+                    Product product = this.product;
+                    if (product == null) {
+                        // Fail if product doesn't exist
+                        cmd.replyTo.tell(new ProdResponses.ReservationFailure("Product not found"));
+                        return this;
+                    }
+
+                    if (product.stock_quantity >= cmd.quantity) {
+                        // If we have enough stock, decrease it and notify success
+                        product.stock_quantity -= cmd.quantity;
+                        cmd.replyTo.tell(new ProdResponses.ReservationSuccess(product.stock_quantity));
+                        return this;
+                    } else {
+                        // Not enough stock available
+                        cmd.replyTo.tell(new ProdResponses.ReservationFailure("Insufficient stock"));
+                        return this;
+                    }
+                })
+                .onMessage(ReleaseReservation.class, cmd -> {
+                    Product product = this.product;
+                    if (product != null) {
+                        // Return the reserved quantity back to available stock
+                        product.stock_quantity += cmd.quantity;
+                    }
+                    return this;
+                })
+                .build();
+    }
+
+    /**
+     * Handler for AddToStock command.
+     * Increases the product's stock quantity and confirms success.
+     */
+    private Behavior<Command> onAddToStock(AddToStock msg) {
+        this.product.stock_quantity += msg.add_amount;
+        msg.replyTo.tell(new ProdResponses.AddStatus(true));
+        return this;
+    }
+
+    /**
+     * Handler for AddToStockForDeleteOrder command.
+     * Increases stock when an order is deleted and notifies the DeleteOrder actor.
+     */
+    private Behavior<Command> onAddToStockForDeleteOrder(AddToStockForDeleteOrder msg) {
+        this.product.stock_quantity += msg.add_amount;
+        msg.replyTo.tell(new OneDeleteOrder.Command() {});  // Send empty command as acknowledgment
+        return this;
+    }
+
+    /**
+     * Handler for SubtractFromStock command.
+     * Decreases stock if sufficient quantity is available.
+     * Returns success or failure status to the caller.
+     */
+    private Behavior<Command> onSubtractFromStock(SubtractFromStock msg) {
+        if (msg.subtract_amount <= this.product.stock_quantity) {
+            // If we have enough stock, subtract it
+            this.product.stock_quantity -= msg.subtract_amount;
+            System.out.println("Subsctract Amount: " + msg.subtract_amount + " Current Amount: " + product.stock_quantity + 1);
+            msg.replyTo.tell(new ProdResponses.SubtractStatus(true));
+        } else {
+            // Not enough stock
+            msg.replyTo.tell(new ProdResponses.SubtractStatus(false));
+        }
+        return this;
+    }
+
+    /**
+     * Handler for GetProductDetails command.
+     * Returns the complete product information to the requester.
+     */
+    private Behavior<Command> onGetProductDetails(GetProductDetails msg) {
+        ProductFound productFound = new ProductFound(product);
+        msg.replyTo.tell(productFound);
+        return this;
+    }
+}
