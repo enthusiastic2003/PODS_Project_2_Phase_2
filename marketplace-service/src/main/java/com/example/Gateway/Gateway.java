@@ -119,132 +119,132 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
                 .build();
     }
 
- // ----- Message Handlers -----
+    // ----- Message Handlers -----
 
-// Handler for initialization message
-private Behavior<Command> onInitialize(Initialize msg) {
-    getContext().getLog().info("Initializing HTTP server...");
-    startHttpServer();  // Start the HTTP server for external API calls
-    return this;  // Maintain current behavior
-}
-
-// Handler for product lookup requests
-private Behavior<Command> onGetProduct(GetProduct msg) {
-    int productId = msg.productId;
-
-    // Check if product exists in local registry
-    if (productMap.containsKey(productId)) {
-        // Get sharded entity reference for the product
-        EntityRef<Oneproduct.Command> productEntity = sharding.entityRefFor(
-            Oneproduct.ENTITY_KEY, 
-            String.valueOf(productId)
-        );
-        
-        // Request details from product entity
-        productEntity.tell(new Oneproduct.GetProductDetails(msg.replyTo));
-    } else {
-        // Immediate response if product not found
-        msg.replyTo.tell(new ProductNotFound());
+    // Handler for initialization message
+    private Behavior<Command> onInitialize(Initialize msg) {
+        getContext().getLog().info("Initializing HTTP server...");
+        startHttpServer();  // Start the HTTP server for external API calls
+        return this;  // Maintain current behavior
     }
 
-    return this;
-}
+    // Handler for product lookup requests
+    private Behavior<Command> onGetProduct(GetProduct msg) {
+        int productId = msg.productId;
 
-// Counter for order IDs (potential concurrency issue in clustered environment)
-private Integer latestOrderId = 0;
+        // Check if product exists in local registry
+        if (productMap.containsKey(productId)) {
+            // Get sharded entity reference for the product
+            EntityRef<Oneproduct.Command> productEntity = sharding.entityRefFor(
+                Oneproduct.ENTITY_KEY, 
+                String.valueOf(productId)
+            );
+            
+            // Request details from product entity
+            productEntity.tell(new Oneproduct.GetProductDetails(msg.replyTo));
+        } else {
+            // Immediate response if product not found
+            msg.replyTo.tell(new ProductNotFound());
+        }
 
-// Handler for new order requests
-private Behavior<Command> onPlaceOrder(PlaceOrder msg) {
-    latestOrderId++;  // Increment order ID counter
-    
-    // Create child actor to handle order processing
-    ActorRef<OnePlaceOrder.Command> orderProcessor = getContext().spawn(
-        OnePlaceOrder.create(
-            msg, 
-            latestOrderId, 
-            sharding,
-            productMap, 
-            orderMap, 
-            discountManagerRef
-        ),
-        "OnePlaceOrder_" + latestOrderId  // Unique name for child actor
-    );
-
-    getContext().getLog().info("Spawned OnePlaceOrder Actor for Order ID: {}", latestOrderId);
-    
-    return this;
-}
-
-// Handler for order retrieval requests
-private Behavior<Command> onGetOrder(GetOrder msg) {
-    if (orderMap.containsKey(msg.orderId)) {
-        // Get sharded entity reference for the order
-        EntityRef<OneOrder.Command> orderEntity = sharding.entityRefFor(
-            OneOrder.ENTITY_KEY, 
-            String.valueOf(msg.orderId)
-        );
-        
-        // Async ask pattern to get order details
-        CompletionStage<OneOrder.Order> result = AskPattern.ask(
-            orderEntity,
-            replyTo -> new OneOrder.GetOrderDetails(replyTo),
-            Duration.ofSeconds(3),  // Timeout for safety
-            getContext().getSystem().scheduler()
-        );
-
-        // Blocking wait for result (anti-pattern in reactive systems)
-        OneOrder.Order order = result.toCompletableFuture().join();
-        msg.replyTo.tell(new OrderGetResponse.OrderSuccess(order));
-    } else {
-        msg.replyTo.tell(new OrderGetResponse.OrderFailure());
-    }
-
-    return this;
-}
-
-// Handler for order status updates
-private Behavior<Command> onPutOrderStatus(PutOrderStatus msg) {
-    if (orderMap.containsKey(msg.order_id)) {
-        // Get sharded entity reference
-        EntityRef<OneOrder.Command> orderEntity = sharding.entityRefFor(
-            OneOrder.ENTITY_KEY, 
-            String.valueOf(msg.order_id)
-        );
-        
-        // Forward status update to order entity
-        orderEntity.tell(new OneOrder.PutOrderStatus(msg.status, msg.replyTo));
-    } else {
-        // Immediate error response
-        msg.replyTo.tell(new OrderPutResponse(StatusCodes.BAD_REQUEST, "Order Not Found"));
-    }
-
-    return this;
-}
-
-// Counter for delete operation IDs
-int uniqdeleteid = 0;
-
-// Handler for order deletion requests
-private Behavior<Command> onDeleteOrder(DeleteOrder msg) {
-    System.out.println("onDeleteOrder "+msg.order_id);  // Consider using proper logging
-    
-    if (!orderMap.containsKey(msg.order_id)) {
-        msg.replyTo.tell(new OrderDelete.Failure("Order ID not found in the order map"));
         return this;
     }
 
-    // Create child actor to handle deletion process
-    ActorRef<OneDeleteOrder.Command> deleteOrderActor = getContext().spawn(
-        OneDeleteOrder.create(msg, sharding, productMap),
-        "DeleteOrderActor_" + uniqdeleteid  // Unique actor name
-    );
-    uniqdeleteid++;
-    
-    // Note: The actual delete command to the order entity is commented out
-    // deleteOrderActor.tell(new OneOrder.DeleteOrder(msg.order_id, msg.replyTo));
-    
-    return this;
-}
+    // Counter for order IDs (potential concurrency issue in clustered environment)
+    private Integer latestOrderId = 0;
+
+    // Handler for new order requests
+    private Behavior<Command> onPlaceOrder(PlaceOrder msg) {
+        latestOrderId++;  // Increment order ID counter
+        
+        // Create child actor to handle order processing
+        ActorRef<OnePlaceOrder.Command> orderProcessor = getContext().spawn(
+            OnePlaceOrder.create(
+                msg, 
+                latestOrderId, 
+                sharding,
+                productMap, 
+                orderMap, 
+                discountManagerRef
+            ),
+            "OnePlaceOrder_" + latestOrderId  // Unique name for child actor
+        );
+
+        getContext().getLog().info("Spawned OnePlaceOrder Actor for Order ID: {}", latestOrderId);
+        
+        return this;
+    }
+
+    // Handler for order retrieval requests
+    private Behavior<Command> onGetOrder(GetOrder msg) {
+        if (orderMap.containsKey(msg.orderId)) {
+            // Get sharded entity reference for the order
+            EntityRef<OneOrder.Command> orderEntity = sharding.entityRefFor(
+                OneOrder.ENTITY_KEY, 
+                String.valueOf(msg.orderId)
+            );
+            
+            // Async ask pattern to get order details
+            CompletionStage<OneOrder.Order> result = AskPattern.ask(
+                orderEntity,
+                replyTo -> new OneOrder.GetOrderDetails(replyTo),
+                Duration.ofSeconds(3),  // Timeout for safety
+                getContext().getSystem().scheduler()
+            );
+
+            // Blocking wait for result (anti-pattern in reactive systems)
+            OneOrder.Order order = result.toCompletableFuture().join();
+            msg.replyTo.tell(new OrderGetResponse.OrderSuccess(order));
+        } else {
+            msg.replyTo.tell(new OrderGetResponse.OrderFailure());
+        }
+
+        return this;
+    }
+
+    // Handler for order status updates
+    private Behavior<Command> onPutOrderStatus(PutOrderStatus msg) {
+        if (orderMap.containsKey(msg.order_id)) {
+            // Get sharded entity reference
+            EntityRef<OneOrder.Command> orderEntity = sharding.entityRefFor(
+                OneOrder.ENTITY_KEY, 
+                String.valueOf(msg.order_id)
+            );
+            
+            // Forward status update to order entity
+            orderEntity.tell(new OneOrder.PutOrderStatus(msg.status, msg.replyTo));
+        } else {
+            // Immediate error response
+            msg.replyTo.tell(new OrderPutResponse(StatusCodes.BAD_REQUEST, "Order Not Found"));
+        }
+
+        return this;
+    }
+
+    // Counter for delete operation IDs
+    int uniqdeleteid = 0;
+
+    // Handler for order deletion requests
+    private Behavior<Command> onDeleteOrder(DeleteOrder msg) {
+        System.out.println("onDeleteOrder "+msg.order_id);  // Consider using proper logging
+        
+        if (!orderMap.containsKey(msg.order_id)) {
+            msg.replyTo.tell(new OrderDelete.Failure("Order ID not found in the order map"));
+            return this;
+        }
+
+        // Create child actor to handle deletion process
+        ActorRef<OneDeleteOrder.Command> deleteOrderActor = getContext().spawn(
+            OneDeleteOrder.create(msg, sharding, productMap),
+            "DeleteOrderActor_" + uniqdeleteid  // Unique actor name
+        );
+        uniqdeleteid++;
+        
+        // Note: The actual delete command to the order entity is commented out
+        // deleteOrderActor.tell(new OneOrder.DeleteOrder(msg.order_id, msg.replyTo));
+        
+        return this;
+    }
 
 
     // ----- Helper Methods -----
