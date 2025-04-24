@@ -255,17 +255,11 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
 
     private Gateway(ActorContext<Command> context) {
         super(context);
-
         this.discountManagerRef = getContext().spawn(DiscountManager.create(), "discountManager");
-
-
-
         // Initialize the ClusterSharding extension
         this.sharding = ClusterSharding.get(context.getSystem());
-
         // Load products from CSV
         this.productMap = loadProducts(context);
-
         // Initialize sharding for products
         this.sharding.init(
                 Entity.of(
@@ -284,7 +278,6 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
                         }
                 )
         );
-
         this.sharding.init(
                 Entity.of(
                         OneOrder.ENTITY_KEY, entityContext -> OneOrder.create()
@@ -292,6 +285,8 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         );
 
 
+        
+    
 
         context.getLog().info("Gateway initialized with {} products and sharding configured", productMap.size());
     }
