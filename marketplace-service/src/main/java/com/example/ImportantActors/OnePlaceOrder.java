@@ -88,9 +88,6 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
 
     private Behavior<Command> processOrder() {
 
-//        int port = getContext().getSystem().settings()
-//                .config().getInt("akka.remote.artery.canonical.port");
-
         getContext().getLog().info("Processing order: {}", orderRequests);
 
         getContext().getLog().info("ARG PORT: " + getContext().getSystem().settings().config().getInt("akka.remote.artery.canonical.port"));
@@ -200,7 +197,7 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
 
     private Behavior<Command> stopWithFailure(String reason, StatusCode statusCode) {
         getContext().getLog().error("Order processing failed: {}", reason);
-        replyTo.tell(new OrderPostResponse.OrderFailure(statusCode, reason));
+        replyTo.tell(new OrderPostResponse.OrderFailure(statusCode.intValue(), reason));
         return Behaviors.stopped();
     }
 

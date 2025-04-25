@@ -188,18 +188,18 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     private Behavior<Command> onPutOrderDetails(PutOrderStatus msg) {
         if (msg.order_status != OrderStatus.DELIVERED) {
             msg.replyTo.tell(new OrderPutResponse(
-                    StatusCodes.BAD_REQUEST, "Invalid Status set request"));
+                    StatusCodes.BAD_REQUEST.intValue(), "Invalid Status set request"));
             return this;
         }
 
         if (this.order.status != OrderStatus.PLACED) {
             msg.replyTo.tell(new OrderPutResponse(
-                    StatusCodes.BAD_REQUEST, "Order status not PLACED"));
+                    StatusCodes.BAD_REQUEST.intValue(), "Order status not PLACED"));
             return this;
         }
 
         this.order.status = OrderStatus.DELIVERED;
-        msg.replyTo.tell(new OrderPutResponse(StatusCodes.OK, "Order Delivered"));
+        msg.replyTo.tell(new OrderPutResponse(StatusCodes.OK.intValue(), "Order Delivered"));
         return this;
     }
 }

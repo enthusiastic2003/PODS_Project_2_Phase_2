@@ -47,6 +47,7 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         }
     }
 
+    // Done: WORKING
     // GET /products/{productId} – forward the request to the corresponding product actor.
     @JsonTypeInfo(use = JsonTypeInfo.Id.CLASS)
     public static final class GetProduct implements Command {
@@ -59,6 +60,7 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         }
     }
 
+    //Done: Working
     // GET /orders/{orderId} – forward the request to the corresponding order actor.
     public static final class GetOrder implements Command {
         public final int orderId;
@@ -69,6 +71,7 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         }
     }
 
+    //Done: Working
     // PUT /orders/{orderId} – forward the request (with new order status) to the corresponding order actor.
     public static final class PutOrderStatus implements Command {
         public final int order_id;
@@ -82,8 +85,8 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
         }
     }
 
+    //Done: Working
     //POST /orders
-
     public static final class PlaceOrder  implements Command {
 
         public final OrderPostRequests reqOrder;
@@ -220,7 +223,7 @@ private Behavior<Command> onPutOrderStatus(PutOrderStatus msg) {
         orderEntity.tell(new OneOrder.PutOrderStatus(msg.status, msg.replyTo));
     } else {
         // Immediate error response
-        msg.replyTo.tell(new OrderPutResponse(StatusCodes.BAD_REQUEST, "Order Not Found"));
+        msg.replyTo.tell(new OrderPutResponse(StatusCodes.BAD_REQUEST.intValue(), "Order Not Found"));
     }
 
     return this;

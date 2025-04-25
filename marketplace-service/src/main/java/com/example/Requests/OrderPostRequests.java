@@ -1,12 +1,13 @@
 package com.example.Requests;
 
+import com.example.SerializableTraitClass;
 import com.fasterxml.jackson.annotation.JsonCreator;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 
 // used to make json for order request
-public class OrderPostRequests {
+public class OrderPostRequests extends SerializableTraitClass {
     public final Integer user_id;
     public final List<OrderItemRequests> items;
 

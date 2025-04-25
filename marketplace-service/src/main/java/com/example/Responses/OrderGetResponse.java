@@ -6,28 +6,34 @@ import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import com.example.ImportantActors.OneOrder;
-// Order Get Response Actor
+import com.example.SerializableTraitClass;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 
 public class OrderGetResponse extends AbstractBehavior<OrderGetResponse.Response> {
 
     public interface Response {}
 
-    public static class OrderSuccess implements Response {  // 🔹 Added `static`
+    public static class OrderSuccess extends SerializableTraitClass implements Response {
+        @JsonProperty("order")  // Add this annotation for JSON serialization
         public OneOrder.Order order;
 
-        public OrderSuccess(OneOrder.Order order) {
+        // Constructor for JSON deserialization
+        public OrderSuccess(@JsonProperty("order") OneOrder.Order order) {
             this.order = order;
         }
     }
 
-    public static class OrderFailure implements Response {
+    public static class OrderFailure extends SerializableTraitClass implements Response {
+        // No properties, can be simply an empty class
+    }
 
-    }  // 🔹 Added `static`
-
+    // Constructor
     public OrderGetResponse(ActorContext<OrderGetResponse.Response> context) {
         super(context);
     }
 
+    // Factory method to create a new instance of this actor
     public static Behavior<OrderGetResponse.Response> create() {
         return Behaviors.setup(OrderGetResponse::new);
     }
@@ -48,4 +54,3 @@ public class OrderGetResponse extends AbstractBehavior<OrderGetResponse.Response
         return Behaviors.stopped();
     }
 }
-

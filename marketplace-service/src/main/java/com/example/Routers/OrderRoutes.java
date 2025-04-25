@@ -63,7 +63,7 @@ public class OrderRoutes {
                                                 return complete(StatusCodes.CREATED, orderResponse, Jackson.marshaller());
                                             } else if (orderResponse instanceof OrderPostResponse.OrderFailure) {
                                                 OrderPostResponse.OrderFailure failureResponse = (OrderPostResponse.OrderFailure) orderResponse;
-                                                return complete(failureResponse.statusCode, failureResponse.message, Jackson.marshaller());
+                                                return complete(StatusCodes.get(failureResponse.statusCode), failureResponse.message, Jackson.marshaller());
                                             } else {
                                                 return complete(StatusCodes.INTERNAL_SERVER_ERROR, "Unknown response", Jackson.marshaller());
                                             }
@@ -132,7 +132,7 @@ public class OrderRoutes {
                                         askTimeout,
                                         scheduler
                                     ),
-                                    putResponse -> complete(StatusCodes.get(putResponse.status.intValue()), putResponse.message)
+                                    putResponse -> complete(StatusCodes.get(putResponse.status), putResponse.message)
                                 );
                             })
                         )
