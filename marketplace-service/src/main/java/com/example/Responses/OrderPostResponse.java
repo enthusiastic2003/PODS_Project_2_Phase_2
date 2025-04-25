@@ -8,7 +8,9 @@ import akka.actor.typed.javadsl.Receive;
 import akka.http.javadsl.model.StatusCode;
 import com.example.ImportantActors.OrderItem;
 import com.example.ImportantActors.OrderStatus;
-import com.example.Requests.OrderItemRequests;
+import com.example.SerializableTraitClass;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.List;
 
@@ -18,26 +20,50 @@ public class OrderPostResponse extends AbstractBehavior<OrderPostResponse.Respon
     public interface Response {}
 
     // Message to indicate order success with details
-    public static class OrderSuccess implements Response {
+    public static class OrderSuccess extends SerializableTraitClass implements Response {
+        @JsonProperty("order_id")
         public final int order_id;
+
+        @JsonProperty("user_id")
         public final int user_id;
+
+        @JsonProperty("total_price")
         public final int total_price;
+
+        @JsonProperty("status")
         public final OrderStatus status;
+
+        @JsonProperty("items")
         public final List<OrderItem> items;
 
-        public OrderSuccess(int orderId, int userId, int totalPrice, OrderStatus stats, List<OrderItem> items) {
+        @JsonCreator
+        public OrderSuccess(
+                @JsonProperty("order_id") int orderId,
+                @JsonProperty("user_id") int userId,
+                @JsonProperty("total_price") int totalPrice,
+                @JsonProperty("status") OrderStatus status,
+                @JsonProperty("items") List<OrderItem> items
+        ) {
             this.order_id = orderId;
             this.user_id = userId;
             this.total_price = totalPrice;
+            this.status = status;
             this.items = items;
-            this.status = stats;
         }
     }
 
-    public static class OrderFailure implements Response {
+    public static class OrderFailure extends SerializableTraitClass implements Response {
+        @JsonProperty("status_code")
         public final StatusCode statusCode;
+
+        @JsonProperty("message")
         public final String message;
-        public OrderFailure(StatusCode statusCode, String message) {
+
+        @JsonCreator
+        public OrderFailure(
+                @JsonProperty("status_code") StatusCode statusCode,
+                @JsonProperty("message") String message
+        ) {
             this.statusCode = statusCode;
             this.message = message;
         }
@@ -66,6 +92,4 @@ public class OrderPostResponse extends AbstractBehavior<OrderPostResponse.Respon
     private Behavior<Response> onOrderSuccess(OrderSuccess msg) {
         return Behaviors.stopped();
     }
-
-
 }

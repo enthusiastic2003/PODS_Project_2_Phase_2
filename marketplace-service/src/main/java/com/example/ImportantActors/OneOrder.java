@@ -7,34 +7,38 @@ import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import akka.http.javadsl.model.StatusCodes;
 import com.example.Responses.OrderDelete;
 import com.example.Responses.OrderPutResponse;
+import com.example.SerializableTraitClass;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.List;
 
 /**
  * Actor representing a single order in the system.
- * Handles order state management including:
- * - Retrieving order details
- * - Updating order status
- * - Order cancellation
- * - Order initialization
  */
 public class OneOrder extends AbstractBehavior<OneOrder.Command> {
 
     // Interface for response messages
-    public interface Response {}
+    public interface Response{}
 
     /**
      * Data class representing an order's state
      */
-    public static class Order {
-        public Integer order_id;
-        public Integer user_id;
-        public Integer total_price;
+    public static class Order extends SerializableTraitClass {
+        public final Integer order_id;
+        public final Integer user_id;
+        public final Integer total_price;
         public OrderStatus status;
-        public List<OrderItem> items;
+        public final List<OrderItem> items;
 
-        public Order(Integer order_id, Integer user_id, Integer total_price,
-                     OrderStatus order_status, List<OrderItem> order_items) {
+        @JsonCreator
+        public Order(
+                @JsonProperty("order_id") Integer order_id,
+                @JsonProperty("user_id") Integer user_id,
+                @JsonProperty("total_price") Integer total_price,
+                @JsonProperty("status") OrderStatus order_status,
+                @JsonProperty("items") List<OrderItem> order_items
+        ) {
             this.order_id = order_id;
             this.user_id = user_id;
             this.total_price = total_price;
@@ -47,7 +51,7 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     private Order order;
 
     // ----- Protocol for OneOrder Actor -----
-    public interface Command {}
+    public interface Command  {}
 
     // EntityTypeKey for cluster sharding identification
     public static final EntityTypeKey<Command> ENTITY_KEY =
@@ -56,9 +60,11 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     /**
      * Command to retrieve order details
      */
-    public static class GetOrderDetails implements Command {
+    public static class GetOrderDetails extends SerializableTraitClass  implements Command {
         public final ActorRef<OneOrder.Order> replyTo;
-        public GetOrderDetails(ActorRef<OneOrder.Order> replyTo) {
+
+        @JsonCreator
+        public GetOrderDetails(@JsonProperty("replyTo") ActorRef<OneOrder.Order> replyTo) {
             this.replyTo = replyTo;
         }
     }
@@ -66,10 +72,15 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     /**
      * Command to update order status
      */
-    public static class PutOrderStatus implements Command {
+    public static class PutOrderStatus extends SerializableTraitClass  implements Command {
         public final OrderStatus order_status;
         public final ActorRef<OrderPutResponse> replyTo;
-        public PutOrderStatus(OrderStatus orderStatus, ActorRef<OrderPutResponse> replyTo) {
+
+        @JsonCreator
+        public PutOrderStatus(
+                @JsonProperty("order_status") OrderStatus orderStatus,
+                @JsonProperty("replyTo") ActorRef<OrderPutResponse> replyTo
+        ) {
             this.order_status = orderStatus;
             this.replyTo = replyTo;
         }
@@ -78,19 +89,23 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     /**
      * Command to initialize/update order state
      */
-    public static class SetOrder implements Command {
+    public static class SetOrder extends SerializableTraitClass implements Command {
         public final Order order;
-        public SetOrder(Order order) {
+
+        @JsonCreator
+        public SetOrder(@JsonProperty("order") Order order) {
             this.order = order;
         }
     }
 
     /**
-     * Command to send order details (similar to GetOrderDetails)
+     * Command to send order details
      */
-    public static class SendOrders implements Command {
+    public static class SendOrders extends SerializableTraitClass  implements Command {
         public final ActorRef<OneOrder.Order> replyTo;
-        public SendOrders(ActorRef<OneOrder.Order> replyTo) {
+
+        @JsonCreator
+        public SendOrders(@JsonProperty("replyTo") ActorRef<OneOrder.Order> replyTo) {
             this.replyTo = replyTo;
         }
     }
@@ -98,9 +113,11 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     /**
      * Command to delete/cancel an order
      */
-    public static class DeleteOrder implements Command {
+    public static class DeleteOrder extends SerializableTraitClass  implements Command {
         public final ActorRef<OrderDelete.Response> replyTo;
-        public DeleteOrder(ActorRef<OrderDelete.Response> replyTo) {
+
+        @JsonCreator
+        public DeleteOrder(@JsonProperty("replyTo") ActorRef<OrderDelete.Response> replyTo) {
             this.replyTo = replyTo;
         }
     }
@@ -112,7 +129,7 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
 
     // Factory method to create the actor
     public static Behavior<Command> create() {
-        return Behaviors.setup(context -> new OneOrder(context));
+        return Behaviors.setup(OneOrder::new);
     }
 
     // Define message handlers
@@ -130,13 +147,11 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     /**
      * Handles order deletion/cancellation requests
      */
-    public Behavior<Command> onDeleteOrder(DeleteOrder command) {
-        // Only allow cancellation if order is in PLACED status
+    private Behavior<Command> onDeleteOrder(DeleteOrder command) {
         if (this.order.status != OrderStatus.PLACED) {
             command.replyTo.tell(new OrderDelete.Failure(
                     "Order Deletion Failed because order status not placed"));
         } else {
-            // Mark order as cancelled
             this.order.status = OrderStatus.CANCELLED;
             command.replyTo.tell(new OrderDelete.Success("Order Deleted"));
         }
@@ -144,9 +159,9 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     }
 
     /**
-     * Handles order details requests (similar to GetOrderDetails)
+     * Handles order details requests (SendOrders)
      */
-    public Behavior<Command> onSendOrders(SendOrders msg) {
+    private Behavior<Command> onSendOrders(SendOrders msg) {
         msg.replyTo.tell(this.order);
         return this;
     }
@@ -163,7 +178,7 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
      * Handles order details requests
      */
     private Behavior<Command> onGetOrderDetails(GetOrderDetails msg) {
-        msg.replyTo.tell(order);
+        msg.replyTo.tell(this.order);
         return this;
     }
 
@@ -171,21 +186,18 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
      * Handles order status update requests
      */
     private Behavior<Command> onPutOrderDetails(PutOrderStatus msg) {
-        // Currently only allows transition to DELIVERED status
         if (msg.order_status != OrderStatus.DELIVERED) {
             msg.replyTo.tell(new OrderPutResponse(
                     StatusCodes.BAD_REQUEST, "Invalid Status set request"));
             return this;
         }
 
-        // Only allow status update if order is PLACED
         if (this.order.status != OrderStatus.PLACED) {
             msg.replyTo.tell(new OrderPutResponse(
                     StatusCodes.BAD_REQUEST, "Order status not PLACED"));
             return this;
         }
 
-        // Update status to DELIVERED
         this.order.status = OrderStatus.DELIVERED;
         msg.replyTo.tell(new OrderPutResponse(StatusCodes.OK, "Order Delivered"));
         return this;

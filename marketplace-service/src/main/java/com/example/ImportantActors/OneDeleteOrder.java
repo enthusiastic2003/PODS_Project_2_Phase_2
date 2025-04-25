@@ -49,6 +49,8 @@ public class OneDeleteOrder extends AbstractBehavior<OneDeleteOrder.Command> {
         return Behaviors.setup(context -> new OneDeleteOrder(context, orderId, sharding, productMap));
     }
 
+
+
     // Actor state and dependencies
     private final Gateway.DeleteOrder msg;  // Original delete order message
     private final ClusterSharding sharding;  // Cluster sharding reference

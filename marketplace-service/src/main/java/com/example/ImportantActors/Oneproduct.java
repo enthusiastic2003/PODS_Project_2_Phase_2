@@ -4,8 +4,11 @@ import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.*;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
+import akka.serialization.jackson.JsonSerializable;
 import com.example.Responses.ProductFound;
 import com.example.Responses.ProductResponse;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
  * The Oneproduct actor represents a single product in an inventory system.
@@ -21,17 +24,27 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
      * Internal data structure that holds product information.
      * Note that stock_quantity is mutable while other properties are immutable.
      */
-    public static class Product {
-        public final Integer id;              // Unique product identifier
-        public final String name;             // Product name
-        public final String description;      // Product description
-        public final Integer price;           // Product price
-        public Integer stock_quantity;        // Current stock level - mutable
 
-        /**
-         * Constructor for Product data object.
-         */
-        public Product(Integer id, String name, String description, Integer price, Integer stock_quantity) {
+    public static class Product implements JsonSerializable {
+        @JsonProperty("id")
+        public final Integer id;
+        @JsonProperty("name")
+        public final String name;
+        @JsonProperty("description")
+        public final String description;
+        @JsonProperty("price")
+        public final Integer price;
+        @JsonProperty("stock_quantity")
+        public Integer stock_quantity; // mutable
+
+        @JsonCreator
+        public Product(
+                @JsonProperty("id") Integer id,
+                @JsonProperty("name") String name,
+                @JsonProperty("description") String description,
+                @JsonProperty("price") Integer price,
+                @JsonProperty("stock_quantity") Integer stock_quantity
+        ) {
             this.id = id;
             this.name = name;
             this.description = description;
@@ -44,7 +57,7 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
      * Base interface for all commands that this actor can handle.
      * All command types must implement this marker interface.
      */
-    public interface Command { }
+    public interface Command extends JsonSerializable { }
 
     /**
      * Entity type key used for cluster sharding configuration.
@@ -58,10 +71,14 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
      * This is typically used in the first step of order processing before confirming payment.
      */
     public static class ReserveStock implements Command {
+        @JsonProperty("quantity")
         public final int quantity;                                      // Quantity to reserve
+        @JsonProperty("replyTo")
         public final ActorRef<ProdResponses.ReservationResponse> replyTo;  // Actor to send the response to
 
-        public ReserveStock(int quantity, ActorRef<ProdResponses.ReservationResponse> replyTo) {
+        @JsonCreator
+        public ReserveStock(@JsonProperty("quantity") int quantity,
+                            @JsonProperty("replyTo") ActorRef<ProdResponses.ReservationResponse> replyTo) {
             this.quantity = quantity;
             this.replyTo = replyTo;
         }
@@ -72,9 +89,11 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
      * This makes the previously reserved quantity available for other orders.
      */
     public static class ReleaseReservation implements Command {
+        @JsonProperty("quantity")
         public final int quantity;    // Quantity to release back to available stock
 
-        public ReleaseReservation(int quantity) {
+        @JsonCreator
+        public ReleaseReservation(@JsonProperty("quantity") int quantity) {
             this.quantity = quantity;
         }
     }
@@ -84,10 +103,14 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
      * Used when new inventory arrives or for replenishment.
      */
     public static class AddToStock implements Command {
+        @JsonProperty("add_amount")
         public final int add_amount;                              // Amount to add to stock
+        @JsonProperty("replyTo")
         public final ActorRef<ProdResponses.AddStatus> replyTo;   // Actor to send response to
 
-        public AddToStock(int add_amount, ActorRef<ProdResponses.AddStatus> replyTo) {
+        @JsonCreator
+        public AddToStock(@JsonProperty("add_amount") int add_amount,
+                          @JsonProperty("replyTo") ActorRef<ProdResponses.AddStatus> replyTo) {
             this.add_amount = add_amount;
             this.replyTo = replyTo;
         }
@@ -98,10 +121,14 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
      * This allows for direct communication with the OneDeleteOrder actor.
      */
     public static class AddToStockForDeleteOrder implements Command {
+        @JsonProperty("add_amount")
         public final Integer add_amount;                     // Amount to add back to stock
+        @JsonProperty("replyTo")
         public final ActorRef<OneDeleteOrder.Command> replyTo;  // DeleteOrder actor to notify
 
-        public AddToStockForDeleteOrder(Integer add_amount, ActorRef<OneDeleteOrder.Command> replyTo) {
+        @JsonCreator
+        public AddToStockForDeleteOrder(@JsonProperty("add_amount") Integer add_amount,
+                                        @JsonProperty("replyTo") ActorRef<OneDeleteOrder.Command> replyTo) {
             this.add_amount = add_amount;
             this.replyTo = replyTo;
         }
@@ -112,10 +139,14 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
      * Used when finalizing orders or removing damaged inventory.
      */
     public static class SubtractFromStock implements Command {
+        @JsonProperty("subtract_amount")
         public final int subtract_amount;                              // Amount to remove from stock
+        @JsonProperty("replyTo")
         public final ActorRef<ProdResponses.SubtractStatus> replyTo;   // Actor to send response to
 
-        public SubtractFromStock(int subtract_amount, ActorRef<ProdResponses.SubtractStatus> replyTo) {
+        @JsonCreator
+        public SubtractFromStock(@JsonProperty("subtract_amount") int subtract_amount,
+                                 @JsonProperty("replyTo") ActorRef<ProdResponses.SubtractStatus> replyTo) {
             this.subtract_amount = subtract_amount;
             this.replyTo = replyTo;
         }
@@ -126,9 +157,11 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
      * Used by UI components or other actors that need product information.
      */
     public static class GetProductDetails implements Command {
-        public final ActorRef<ProductResponse> replyTo;    // Actor to send product details to
+        @JsonProperty("replyTo")
+        public final ActorRef<ProductResponse> replyTo;
 
-        public GetProductDetails(ActorRef<ProductResponse> replyTo) {
+        @JsonCreator
+        public GetProductDetails(@JsonProperty("replyTo") ActorRef<ProductResponse> replyTo) {
             this.replyTo = replyTo;
         }
     }
@@ -152,6 +185,18 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
     public static Behavior<Command> create(Product product) {
         return Behaviors.setup(context -> new Oneproduct(context, product));
     }
+
+    public static final class Ping implements Command {
+        @JsonProperty("replyTo")
+        public final ActorRef<Ack> replyTo;
+
+        @JsonCreator
+        public Ping(@JsonProperty("replyTo") ActorRef<Ack> replyTo) {
+            this.replyTo = replyTo;
+        }
+    }
+
+    public static final class Ack {}
 
     /**
      * Defines how the actor responds to different command messages.
@@ -190,6 +235,10 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
                         product.stock_quantity += cmd.quantity;
                     }
                     return this;
+                })
+                .onMessage(Ping.class, msg -> {
+                    msg.replyTo.tell(new Ack());
+                    return Behaviors.same();
                 })
                 .build();
     }

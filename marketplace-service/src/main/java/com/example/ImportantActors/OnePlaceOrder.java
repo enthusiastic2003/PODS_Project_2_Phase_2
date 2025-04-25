@@ -11,6 +11,9 @@ import com.example.Gateway.Gateway;
 import com.example.Requests.OrderItemRequests;
 import com.example.Requests.OrderPostRequests;
 import com.example.Responses.*;
+import com.example.SerializableTraitClass;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import akka.http.javadsl.unmarshalling.Unmarshaller;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -21,54 +24,83 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.ExecutionException;
 
 public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
 
     public interface Command {}
+    public interface Response {}
 
     public static class Stop implements Command {} // Stop command
 
     private ClusterSharding sharding;
-    private Map<Integer, Oneproduct.Product> productMap;
 
-    private final OrderPostRequests orderRequests;
+    private  OrderPostRequests orderRequests;
     public Integer portUserService = 8080;
     public Integer portWalletService = 8082;
-    private final ActorRef<OrderPostResponse.Response> replyTo;
+    private  ActorRef<OrderPostResponse.Response> replyTo;
     private Boolean discountStatus = false;
-    private Map<Integer, OneOrder.Order> orderMap;
-    public final ActorRef<DiscountManager.Command> discountManagerRef;
+    private ActorRef<Gateway.Command> prevActor;
+    public  ActorRef<DiscountManager.Command> discountManagerRef;
     private Integer orderId;
-    private final Http http;
+    private  Http http;
 
-    private OnePlaceOrder(ActorContext<Command> context, Integer orderId, Gateway.PlaceOrder placeOrder,
-                          ClusterSharding sharding, Map<Integer, Oneproduct.Product> productMap,
-                          Map<Integer, OneOrder.Order> orderMap,
-                          ActorRef<DiscountManager.Command> discountManagerRef) {
+    private OnePlaceOrder(ActorContext<Command> context){
+
         super(context);
-        this.orderRequests = placeOrder.reqOrder;
-        this.replyTo = placeOrder.replyTo;
-        this.http = Http.get(context.getSystem());
-        this.sharding = sharding;
-        this.productMap = productMap;
-        this.orderId = orderId;
-        this.orderMap = orderMap;
-        this.discountManagerRef = discountManagerRef;
+        http = Http.get(context.getSystem());
+        sharding = ClusterSharding.get(context.getSystem());
+
     }
 
-    public static Behavior<Command> create(Gateway.PlaceOrder placeOrder, Integer orderId,
-                                           ClusterSharding shards, Map<Integer, Oneproduct.Product> productMap,
-                                           Map<Integer, OneOrder.Order> orderMap,
-                                           ActorRef<DiscountManager.Command> discountManagerRef) {
-        return Behaviors.setup(context -> {
-            OnePlaceOrder actor = new OnePlaceOrder(context, orderId, placeOrder, shards, productMap, orderMap, discountManagerRef);
-            return actor.processOrder(); // Start order processing and return Behavior
-        });
+
+    public static class placeOrderPackage extends SerializableTraitClass implements Command {
+
+        public final OrderPostRequests orderRequests;
+        public final Integer orderId;
+        public final ActorRef<Gateway.Command> orderMap;
+
+        // Transient fields since Akka Jackson cannot serialize ActorRef or ClusterSharding directly
+        public final ActorRef<OrderPostResponse.Response> replyTo;
+        public final ActorRef<DiscountManager.Command> discountManagerRef;
+
+        @JsonCreator
+        public placeOrderPackage(
+                @JsonProperty("orderRequests") OrderPostRequests orderRequests,
+                @JsonProperty("orderId") Integer orderId,
+                @JsonProperty("orderMap") ActorRef<Gateway.Command> orderMap,
+                @JsonProperty("replyTo") ActorRef<OrderPostResponse.Response> replyTo,
+                @JsonProperty("discountManagerRef") ActorRef<DiscountManager.Command> discountManagerRef
+        ) {
+            this.orderRequests = orderRequests;
+            this.orderId = orderId;
+            this.orderMap = orderMap;
+
+            // Transient fields are set to null in deserialized version unless re-attached manually
+            this.replyTo = replyTo;
+            this.discountManagerRef = discountManagerRef;
+
+        }
+    }
+
+    public static Behavior<Command> create() {
+        return Behaviors.setup(context -> new OnePlaceOrder(context));
     }
 
     private Behavior<Command> processOrder() {
+
+//        int port = getContext().getSystem().settings()
+//                .config().getInt("akka.remote.artery.canonical.port");
+
         getContext().getLog().info("Processing order: {}", orderRequests);
+
+        getContext().getLog().info("ARG PORT: " + getContext().getSystem().settings().config().getInt("akka.remote.artery.canonical.port"));
+
+        if(http == null){
+            getContext().getLog().info("No HTTP connection");
+        }
+        else{
+            getContext().getLog().info(http.toString());
+        }
 
         // Step 1: Validate user
         if (!validateUser(orderRequests.user_id).toCompletableFuture().join()) {
@@ -145,7 +177,9 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
         OneOrder.Order order_obj = new OneOrder.Order(orderId, orderRequests.user_id, (int)totalCost,
                 OrderStatus.PLACED, orderItems);
         newOrder.tell(new OneOrder.SetOrder(order_obj));
-        orderMap.put(orderId, order_obj);
+
+        //orderMap.put(orderId, order_obj);
+
 
         // Send success response
         OrderPostResponse.OrderSuccess obj = new OrderPostResponse.OrderSuccess(
@@ -157,6 +191,10 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
         );
 
         replyTo.tell(obj);
+        prevActor.tell(
+                new Gateway.OrderSuccess(orderId)
+        );
+        System.out.println("Order placed successfully");
         return Behaviors.stopped();
     }
 
@@ -201,7 +239,7 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
             int quantity = item.quantity;
 
             // Skip if product doesn't exist
-            if (!productMap.containsKey(pid)) {
+            if (!((pid>=101)&&(pid<=120))) {
                 result = result.thenApply(success -> false);
                 continue;
             }
@@ -290,6 +328,10 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
                 .withUri(walletServiceUrl + userId)
                 .withEntity(HttpEntities.create(ContentTypes.APPLICATION_JSON, jsonPayload));
 
+        if(http == null){
+            getContext().getLog().warn("!!!!!!!!!!http is  null!!!!!!!!!!!");
+        }
+
         // Send request
         return http.singleRequest(walletRequest).thenCompose(response -> {
             if (response.status().isSuccess()) {
@@ -302,22 +344,7 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
         });
     }
 
-    private boolean updateDiscount(Integer user_id) {
-        String userServiceUrl = getContext().getSystem().settings().config().getString("my-app.routes.user-service");
 
-        HttpRequest discountUpdateRequest = HttpRequest.create()
-                .withMethod(HttpMethods.PUT)
-                .withUri(userServiceUrl);
-
-        http.singleRequest(discountUpdateRequest).thenAccept(response -> {
-            if (response.status().isSuccess()) {
-                getContext().getLog().info("Discount status updated successfully for user {}", user_id);
-            } else {
-                getContext().getLog().error("Failed to update discount status for user {}: {}", user_id, response.status());
-            }
-        });
-        return true;
-    }
 
     @Override
     public Receive<Command> createReceive() {
@@ -326,6 +353,18 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
                     getContext().getLog().info("Stopping OnePlaceOrder actor for Order ID: {}", orderId);
                     return Behaviors.stopped();
                 })
+                .onMessage(placeOrderPackage.class, this::onPlaceOrderPackage)
                 .build();
     }
+
+    public Behavior<Command> onPlaceOrderPackage(placeOrderPackage msg) {
+        this.orderRequests = msg.orderRequests;
+        this.replyTo = msg.replyTo;
+        this.orderId = msg.orderId;
+        this.prevActor = msg.orderMap;
+        this.discountManagerRef = msg.discountManagerRef;
+
+        return processOrder();
+    }
+
 }
