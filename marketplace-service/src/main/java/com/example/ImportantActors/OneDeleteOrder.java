@@ -1,5 +1,6 @@
 package com.example.ImportantActors;
 
+import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.*;
 import akka.http.javadsl.Http;
@@ -9,6 +10,9 @@ import akka.http.javadsl.model.HttpMethods;
 import akka.http.javadsl.model.HttpRequest;
 import com.example.Gateway.Gateway;
 import com.example.Responses.OrderDelete;
+import com.example.SerializableTraitClass;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,171 +20,271 @@ import org.slf4j.LoggerFactory;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
-import java.util.concurrent.atomic.AtomicReference;
 
 // Actor responsible for handling order deletion process
 public class OneDeleteOrder extends AbstractBehavior<OneDeleteOrder.Command> {
 
-    // Interface for commands this actor can handle
+    // Commands interface
     public interface Command {}
 
-    // Response message class for deletion operations
-    public static final class Response {
-        public final String message;
-        public Response(String message) {
-            this.message = message;
+    // Command to initiate order deletion process
+    public static final class StartDeleteProcess implements Command {
+        // Empty command to start the process
+    }
+
+    // Command received when order details are received
+    public static final class OrderDetailsReceived implements Command {
+        public final OneOrder.Order order;
+
+        public OrderDetailsReceived(OneOrder.Order order) {
+            this.order = order;
         }
     }
+
+    // Command received when order is deleted
+    public static final class OrderDeleted implements Command {
+        public final OrderDelete.Response response;
+
+        public OrderDeleted(OrderDelete.Response response) {
+            this.response = response;
+        }
+    }
+
+    // Command received when product is restocked
+    public static final class ProductRestocked implements Command {
+        public final int productId;
+        public final int quantity;
+
+        public ProductRestocked(int productId, int quantity) {
+            this.productId = productId;
+            this.quantity = quantity;
+        }
+    }
+
+    // Command received when wallet is updated
+    public static final class WalletUpdated implements Command {
+        public final boolean success;
+
+        public WalletUpdated(boolean success) {
+            this.success = success;
+        }
+    }
+
+    public static final class setOrderDetails extends SerializableTraitClass implements Command {
+        Gateway.DeleteOrder msg;
+
+        @JsonCreator
+        public setOrderDetails(@JsonProperty("msg") Gateway.DeleteOrder msg) {
+            this.msg = msg;
+        }
+    }
+
 
     // Logger for the actor
     private static final Logger logger = LoggerFactory.getLogger(OneDeleteOrder.class);
 
     // Factory method to create the actor
-    public static Behavior<Command> create(Gateway.DeleteOrder orderId, ClusterSharding sharding, 
-                                         Map<Integer, Oneproduct.Product> productMap) {
-        return Behaviors.setup(context -> new OneDeleteOrder(context, orderId, sharding, productMap));
+    public static Behavior<Command> create() {
+        return Behaviors.setup(context -> new OneDeleteOrder(context));
     }
-
-
 
     // Actor state and dependencies
-    private final Gateway.DeleteOrder msg;  // Original delete order message
+    private  Gateway.DeleteOrder msg;  // Original delete order message
     private final ClusterSharding sharding;  // Cluster sharding reference
-    Http http;  // HTTP client for external calls
-    private final Map<Integer, Oneproduct.Product> productMap;  // Product reference data
+    private Http http;  // HTTP client for external calls
+    private OneOrder.Order orderDetails;  // Store order details when received
+    private int productsRestocked = 0;  // Counter to track restocked products
+    private boolean walletUpdated = false;  // Flag to track wallet update
 
     // Constructor
-    private OneDeleteOrder(ActorContext<Command> context, Gateway.DeleteOrder OrderId, 
-                         ClusterSharding sharding, Map<Integer, Oneproduct.Product> productMap) {
+    private OneDeleteOrder(ActorContext<Command> context) {
         super(context);
-        this.msg = OrderId;
-        this.sharding = sharding;
-        this.productMap = productMap;
-        
-        // Debug logging (consider using logger instead of System.out)
-        System.out.println("Order ID: " + msg);
-        System.out.println("Product Map: " + productMap);
-        System.out.println("Sharding: " + sharding);
-        logger.info("DeleteOrder actor constructor");
-
+        //this.msg = orderMsg;
+        this.sharding = ClusterSharding.get(context.getSystem());
         this.http = Http.get(context.getSystem());  // Initialize HTTP client
-        deleteOrder();  // Start deletion process immediately
+        // Self-send a message to start the process
+        // context.getSelf().tell(new StartDeleteProcess());
     }
 
-    // Main order deletion logic
-    private void deleteOrder(){
-        // Get reference to the order entity in the cluster
-        EntityRef<OneOrder.Command> newOrder = sharding.entityRefFor(
-            OneOrder.ENTITY_KEY, 
-            String.valueOf(msg.order_id)
+    // Message handler
+    @Override
+    public Receive<Command> createReceive() {
+        return newReceiveBuilder()
+                .onMessage(StartDeleteProcess.class, this::onStartDeleteProcess)
+                .onMessage(OrderDetailsReceived.class, this::onOrderDetailsReceived)
+                .onMessage(OrderDeleted.class, this::onOrderDeleted)
+                .onMessage(ProductRestocked.class, this::onProductRestocked)
+                .onMessage(WalletUpdated.class, this::onWalletUpdated)
+                .onMessage(setOrderDetails.class, this::onSetOrderDetails)
+                .build();
+    }
+
+    private Behavior<Command> onSetOrderDetails(setOrderDetails cmd) {
+
+            this.msg = cmd.msg;
+            getContext().getSelf().tell(new StartDeleteProcess());
+            return this;
+    }
+
+
+    // Handler for starting the deletion process
+    private Behavior<Command> onStartDeleteProcess(StartDeleteProcess cmd) {
+        logger.info("Starting delete process for order: {}", msg.order_id);
+
+        // Step 1: Request order details
+        EntityRef<OneOrder.Command> orderEntity = sharding.entityRefFor(
+                OneOrder.ENTITY_KEY,
+                String.valueOf(msg.order_id)
         );
 
-        // Get current order details using ask pattern
-        CompletionStage<OneOrder.Order> reponseOrders = AskPattern.ask(
-            newOrder,
-            replyTo -> new OneOrder.GetOrderDetails(replyTo),
-            Duration.ofSeconds(3),  // Timeout for safety
-            getContext().getSystem().scheduler()
+        // Create an adapter that will convert the OneOrder.Order response to our OrderDetailsReceived command
+        ActorRef<OneOrder.Order> orderAdapter = getContext().messageAdapter(
+                OneOrder.Order.class,
+                OrderDetailsReceived::new
         );
 
-        // Blocking wait for order details (potential improvement: make async)
-        OneOrder.Order order = reponseOrders.toCompletableFuture().join();
+        // Request the order details
+        orderEntity.tell(new OneOrder.GetOrderDetails(orderAdapter));
 
-        // Send delete command to order entity
-        CompletionStage<OrderDelete.Response> responseFuture = AskPattern.ask(
-            newOrder,
-            replyTo -> new OneOrder.DeleteOrder(replyTo),
-            Duration.ofSeconds(3),
-            getContext().getSystem().scheduler()
+        return this;
+    }
+
+    // Handler for when order details are received
+    private Behavior<Command> onOrderDetailsReceived(OrderDetailsReceived cmd) {
+        logger.info("Received order details for order ID: {}", msg.order_id);
+
+        // Store order details for later use
+        this.orderDetails = cmd.order;
+
+        // Step 2: Send delete command to order entity
+        EntityRef<OneOrder.Command> orderEntity = sharding.entityRefFor(
+                OneOrder.ENTITY_KEY,
+                String.valueOf(msg.order_id)
         );
 
-        // Process delete response
-        OrderDelete.Response response = responseFuture.toCompletableFuture().join();
+        // Create an adapter that will convert the OrderDelete.Response to our OrderDeleted command
+        ActorRef<OrderDelete.Response> deleteAdapter = getContext().messageAdapter(
+                OrderDelete.Response.class,
+                OrderDeleted::new
+        );
 
-        // Handle failure case
-        if (response instanceof OrderDelete.Failure) {
-            msg.replyTo.tell(new OrderDelete.Failure(((OrderDelete.Failure) response).message));
-            return;
+        // Request the order deletion
+        orderEntity.tell(new OneOrder.DeleteOrder(deleteAdapter));
+
+        return this;
+    }
+
+    // Handler for when order is deleted
+    private Behavior<Command> onOrderDeleted(OrderDeleted cmd) {
+        // Check if deletion was successful
+        if (cmd.response instanceof OrderDelete.Failure) {
+            logger.error("Order deletion failed: {}", ((OrderDelete.Failure) cmd.response).message);
+            // Notify the original sender of failure
+            msg.replyTo.tell(new OrderDelete.Failure(((OrderDelete.Failure) cmd.response).message));
+            return Behaviors.stopped();
         }
 
-        // Restock products from cancelled order
-        List<OrderItem> current_order_items = order.items;
-        for (OrderItem item : current_order_items) {
+        logger.info("Order {} successfully marked as CANCELLED", msg.order_id);
+
+        // Step 3: Restock products
+        List<OrderItem> orderItems = orderDetails.items;
+        for (OrderItem item : orderItems) {
             EntityRef<Oneproduct.Command> productEntity = sharding.entityRefFor(
-                Oneproduct.ENTITY_KEY, 
-                String.valueOf(item.product_id)
+                    Oneproduct.ENTITY_KEY,
+                    String.valueOf(item.product_id)
             );
+
+            // Define a message adapter to handle restocking response
+            ActorRef<Oneproduct.RestockConfirmation> restockAdapter = getContext().messageAdapter(
+                    Oneproduct.RestockConfirmation.class,
+                    resp -> new ProductRestocked(resp.productId, resp.quantity)
+            );
+
             // Add quantity back to product stock
             productEntity.tell(new Oneproduct.AddToStockForDeleteOrder(
-                item.quantity, 
-                getContext().getSelf()
+                    item.quantity,
+                    restockAdapter
             ));
-            System.out.println("Restocked product ID " + item.product_id + 
-                              " with quantity " + item.quantity);
+
+            logger.info("Requested restock for product ID {} with quantity {}",
+                    item.product_id, item.quantity);
         }
 
-        // Refund user's wallet
-        Integer userId = order.user_id;
+        // Step 4: Refund user's wallet
+        Integer userId = orderDetails.user_id;
         String walletServiceUrl = getContext().getSystem().settings().config()
-            .getString("my-app.routes.wallet-service");
-        Integer amount = order.total_price;
+                .getString("my-app.routes.wallet-service");
+        Integer amount = orderDetails.total_price;
 
         try {
             // Create JSON payload for wallet credit
-            ObjectMapper objectMapper = new ObjectMapper();
-            Map<String, Object> requestBodyMap = Map.of(
-                "action", "credit",
-                "amount", amount
-            );
-            String requestBody = objectMapper.writeValueAsString(requestBodyMap);
-            System.out.println("Request body: " + requestBody);
-
-            // Alternative JSON construction
             String jsonPayload = String.format(
-                "{\"action\": \"credit\", \"amount\": %d}", 
-                (int)amount
+                    "{\"action\": \"credit\", \"amount\": %d}",
+                    amount
             );
 
             // Build HTTP request to wallet service
             HttpRequest walletRequest = HttpRequest.create()
-                .withMethod(HttpMethods.PUT)
-                .withUri(walletServiceUrl + userId)
-                .withEntity(HttpEntities.create(
-                    ContentTypes.APPLICATION_JSON, 
-                    jsonPayload
-                ));
+                    .withMethod(HttpMethods.PUT)
+                    .withUri(walletServiceUrl + userId)
+                    .withEntity(HttpEntities.create(
+                            ContentTypes.APPLICATION_JSON,
+                            jsonPayload
+                    ));
+
+            // Set up an adapter to handle HTTP response
+            ActorRef<Boolean> walletAdapter = getContext().messageAdapter(
+                    Boolean.class,
+                    WalletUpdated::new
+            );
 
             // Send request and handle response
-            http.singleRequest(walletRequest).thenCompose(response2 -> {
-                if (response2.status().isSuccess()) {
-                    System.out.println("Wallet service response: " + response.toString());
-                    response2.discardEntityBytes(getContext().getSystem());
-                    return CompletableFuture.completedFuture(true);
-                } else {
-                    response2.discardEntityBytes(getContext().getSystem());
-                    return CompletableFuture.completedFuture(false);
-                }
+            http.singleRequest(walletRequest).thenAccept(response -> {
+                boolean success = response.status().isSuccess();
+                response.discardEntityBytes(getContext().getSystem());
+                walletAdapter.tell(success);
             });
 
         } catch (Exception e) {
             logger.error("Failed to call wallet service", e);
+            walletUpdated = true; // Mark as done even though failed
+            checkCompletion();
         }
 
-        // Notify original sender of success
-        msg.replyTo.tell(new OrderDelete.Success("Order deleted"));
+        return this;
     }
 
-    // Message handler (empty in this case as all work is done in constructor)
-    @Override
-    public Receive<Command> createReceive() {
-        return newReceiveBuilder().build();
+    // Handler for product restock confirmation
+    private Behavior<Command> onProductRestocked(ProductRestocked cmd) {
+        logger.info("Confirmed restock for product ID {} with quantity {}",
+                cmd.productId, cmd.quantity);
+
+        productsRestocked++;
+        checkCompletion();
+        return this;
+    }
+
+    // Handler for wallet update confirmation
+    private Behavior<Command> onWalletUpdated(WalletUpdated cmd) {
+        logger.info("Wallet update completed with success: {}", cmd.success);
+
+        walletUpdated = true;
+        checkCompletion();
+        return this;
+    }
+
+    // Helper method to check if all operations are complete
+    private Behavior<Command> checkCompletion() {
+        // Check if all products have been restocked and wallet has been updated
+        if (walletUpdated && productsRestocked == orderDetails.items.size()) {
+            logger.info("Order deletion process completed successfully for order ID: {}", msg.order_id);
+            // Notify the original sender of success
+            msg.replyTo.tell(new OrderDelete.Success("Order deleted"));
+            // Stop the actor as its work is done
+
+        }
+        return  Behaviors.stopped();
     }
 }

@@ -15,6 +15,7 @@ import akka.http.javadsl.Http;
 import akka.http.javadsl.ServerBinding;
 import akka.http.javadsl.server.Route;
 import com.example.Gateway.Gateway;
+import com.example.ImportantActors.OneDeleteOrder;
 import com.example.ImportantActors.OneOrder;
 import com.example.ImportantActors.OnePlaceOrder;
 import com.example.ImportantActors.Oneproduct;
@@ -51,97 +52,81 @@ public class Guardian {
             // Create ServiceKey for OnePlaceOrder actors
             ServiceKey<OnePlaceOrder.Command> serviceKey = ServiceKey.create(OnePlaceOrder.Command.class, "TempActorServ");
 
-            // Register 50 PlaceOrder actors in the Receptionist
-//            for (int i = 1; i <= 50; i++) {
-//                ActorRef<OnePlaceOrder.Command> ref = context.spawn(OnePlaceOrder.create(), "PlaceOrder" + i);
-//                context.getSystem().receptionist().tell(Receptionist.register(serviceKey, ref));
-//            }
+            ServiceKey<OneDeleteOrder.Command> serviceKey2 = ServiceKey.create(OneDeleteOrder.Command.class, "TempDeleteActorServ");
 
-            // If the node is the primary (port 8083), start the Gateway and HTTP server
+            ClusterSharding shardingF1 = ClusterSharding.get(context.getSystem());
+
+
+            System.out.println("Sharding Strategy: " + context.getSystem().settings().config().getInt(
+                    "akka.cluster.sharding.least-shard-allocation-strategy.rebalance-interval"));
+            shardingF1.init(
+                    Entity.of(
+                            Oneproduct.ENTITY_KEY, entityContext -> Behaviors.setup(actorContext -> Oneproduct.create())
+                    )
+            );
+
+            shardingF1.init(
+                    Entity.of(
+                            OneOrder.ENTITY_KEY,
+                            entityContext -> OneOrder.create()
+                    )
+            );
+
+
             if (port == 8083) {
-
-                // Start HTTP server with the gateway reference
-
-                ClusterSharding shardingF1 = ClusterSharding.get(context.getSystem());
 
                 // Read from csv
                 Map<Integer, Oneproduct.Product> products = loadProducts(context, 101, 110);
 
-                shardingF1.init(
-                        Entity.of(
-                                Oneproduct.ENTITY_KEY, entityContext -> Behaviors.setup(actorContext -> {
-                                    int productId = Integer.parseInt(entityContext.getEntityId());
-                                    Oneproduct.Product product = products.get(productId);
-
-                                    if (product == null) {
-                                        actorContext.getLog().error("Product with ID {} not found", productId);
-                                        return Behaviors.empty(); // Or Behaviors.stopped() if no further processing is needed
-                                    }
-
-                                    // Return the behavior for this specific product
-                                    return Oneproduct.create(product);
-                                })
-                        )
-                );
-
                 for(Integer productId : products.keySet()) {
                     EntityRef<Oneproduct.Command> productRef = shardingF1.entityRefFor(Oneproduct.ENTITY_KEY, String.valueOf(productId));
-                    context.getLog().info("Product with ID {} found", productId);
-                    productRef.tell(new Oneproduct.Ping(ignoreReplies));
+
+                    productRef.tell(
+                            new Oneproduct.setProduct(products.get(productId))
+                    );
                     // or create a temporary actor to receive Ack
                 }
-
-                shardingF1.init(
-                        Entity.of(OneOrder.ENTITY_KEY, entityContext ->
-                                OneOrder.create()));
-
                 //Init Gateway actor
-                ActorRef<Gateway.Command> gatewayRef = context.spawn(Gateway.create(serviceKey), "Gateway");
+                ActorRef<Gateway.Command> gatewayRef = context.spawn(Gateway.create(serviceKey, serviceKey2), "Gateway");
 
                 startHttpServer(context, gatewayRef);
 
             }
 
+
+
             if(port == 8084){
 
-                for (int i = 1; i <= 50; i++) {
-                    ActorRef<OnePlaceOrder.Command> ref = context.spawn(OnePlaceOrder.create(), "PlaceOrder" + i);
-                    context.getSystem().receptionist().tell(Receptionist.register(serviceKey, ref));
-                }
+
 
                 Map<Integer, Oneproduct.Product> products2 = loadProducts(context, 111, 120);
 
-                ClusterSharding shardingF2 = ClusterSharding.get(context.getSystem());
-
-                shardingF2.init(
-                        Entity.of(OneOrder.ENTITY_KEY, entityContext ->
-                                OneOrder.create()));
-
-                shardingF2.init(
-                        Entity.of(
-                                Oneproduct.ENTITY_KEY, entityContext -> {
-                                    int productId = Integer.parseInt(entityContext.getEntityId());
-                                    Oneproduct.Product product = products2.get(productId);
-
-                                    if (product == null) {
-                                        context.getLog().warn("Product with ID {} not found on 8084", productId);
-                                        return Behaviors.empty();
-                                    }
-
-                                    return Oneproduct.create(product);
-                                }
-                        )
-                );
-
                 for(Integer productId : products2.keySet()) {
-                    EntityRef<Oneproduct.Command> productRef = shardingF2.entityRefFor(Oneproduct.ENTITY_KEY, String.valueOf(productId));
-                    context.getLog().info("Product with ID {} found", productId);
-                    productRef.tell(new Oneproduct.Ping(ignoreReplies));
+                    EntityRef<Oneproduct.Command> productRef = shardingF1.entityRefFor(Oneproduct.ENTITY_KEY, String.valueOf(productId));
+
+                    productRef.tell(
+                            new Oneproduct.setProduct(products2.get(productId))
+                    );
+                    // or create a temporary actor to receive Ack
                 }
 
 
             }
 
+            if (port == 8085) {
+                for (int i = 1; i <= 50; i++) {
+                    ActorRef<OneDeleteOrder.Command> ref = context.spawn(OneDeleteOrder.create(), "DeleteOrder" + i);
+                    context.getSystem().receptionist().tell(Receptionist.register(serviceKey2, ref));
+                }
+
+            }
+
+            if(port == 8086) {
+                for (int i = 1; i <= 50; i++) {
+                    ActorRef<OnePlaceOrder.Command> ref = context.spawn(OnePlaceOrder.create(), "PlaceOrder" + i);
+                    context.getSystem().receptionist().tell(Receptionist.register(serviceKey, ref));
+                }
+            }
 
 
             return Behaviors.empty();

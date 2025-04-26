@@ -99,10 +99,13 @@ public class Gateway extends AbstractBehavior<Gateway.Command> {
     }
     
     //DELETE /orders/{order_id}
-    public static class DeleteOrder implements Command {
+    public static class DeleteOrder extends SerializableTraitClass implements Command {
         public final Integer order_id;
         public final ActorRef<OrderDelete.Response> replyTo;
-        public DeleteOrder(int order_id, ActorRef<OrderDelete.Response> replyTo) {
+
+        @JsonCreator
+        public DeleteOrder(@JsonProperty("order_id") int order_id,@JsonProperty("replyTo") ActorRef<OrderDelete.Response> replyTo) {
+
             this.order_id = order_id;
             this.replyTo = replyTo;
         }
@@ -241,10 +244,10 @@ private Behavior<Command> onDeleteOrder(DeleteOrder msg) {
         return this;
     }
 
-    // Create child actor to handle deletion process
-    ActorRef<OneDeleteOrder.Command> deleteOrderActor = getContext().spawn(
-        OneDeleteOrder.create(msg, sharding, productMap),
-        "DeleteOrderActor_" + uniqdeleteid  // Unique actor name
+    this.deleteOrderRouter.tell(
+            new OneDeleteOrder.setOrderDetails(
+                    msg
+            )
     );
     uniqdeleteid++;
     
@@ -257,27 +260,33 @@ private Behavior<Command> onDeleteOrder(DeleteOrder msg) {
 
     // ----- Helper Methods -----
     // In your main actor or service class
-    public static Behavior<Command> create(ServiceKey<OnePlaceOrder.Command> serviceKey) {
+    public static Behavior<Command> create(ServiceKey<OnePlaceOrder.Command> serviceKey, ServiceKey<OneDeleteOrder.Command> serviceKey2) {
         return Behaviors.setup(context -> {
-            return new Gateway(context, serviceKey);
+            return new Gateway(context, serviceKey, serviceKey2);
         });
     }
 
     ServiceKey<OnePlaceOrder.Command> placeOrderKey;
     ActorRef<OnePlaceOrder.Command> placeOrderRouter;
+    ActorRef<OneDeleteOrder.Command>  deleteOrderRouter;
     ServiceKey<OneDeleteOrder.Command> deleteOrderKey;
     // Create a router for this service key
 
-    private Gateway(ActorContext<Command> context, ServiceKey<OnePlaceOrder.Command> serviceKey) {
+    private Gateway(ActorContext<Command> context, ServiceKey<OnePlaceOrder.Command> serviceKey,
+                    ServiceKey<OneDeleteOrder.Command> serviceKey2) {
         super(context);
 
         this.sharding = ClusterSharding.get(context.getSystem());
 
         this.discountManagerRef = getContext().spawn(DiscountManager.create(), "discountManager");
         this.placeOrderKey = serviceKey;
+        this.deleteOrderKey =serviceKey2;
 
         this.placeOrderRouter =
                 context.spawn(Routers.group(placeOrderKey).withRoundRobinRouting(), "PlaceOrderGroupRouter");
+
+        this.deleteOrderRouter =
+                context.spawn(Routers.group(deleteOrderKey).withRoundRobinRouting(), "DeleteOrderGroupRouter");
 
         context.getLog().info("Gateway initialized with {} products and sharding configured", productMap.size());
 

@@ -1,18 +1,25 @@
 package com.example.Responses;
+
+import com.example.SerializableTraitClass;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 // different responses for order delete
 public interface OrderDelete {
-    class Success implements Response {
+    class Success extends SerializableTraitClass implements Response {
         public final String message;
 
-        public Success(String message) {
+        @JsonCreator
+        public Success(@JsonProperty("message") String message) {
             this.message = message;
         }
     }
 
-    class Failure implements Response {
+    class Failure extends SerializableTraitClass implements Response {
         public final String message;
 
-        public Failure(String message) {
+        @JsonCreator
+        public Failure(@JsonProperty("message") String message) {
             this.message = message;
         }
     }

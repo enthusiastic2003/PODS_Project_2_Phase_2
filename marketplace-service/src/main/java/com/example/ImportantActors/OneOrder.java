@@ -45,13 +45,19 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
             this.status = order_status;
             this.items = order_items;
         }
+
+        @Override
+        public String toString() {
+            return String.format("Order(id=%d, userId=%d, totalPrice=%d, status=%s, items=%d)",
+                    order_id, user_id, total_price, status, items.size());
+        }
     }
 
     // Current order state
     private Order order;
 
     // ----- Protocol for OneOrder Actor -----
-    public interface Command  {}
+    public interface Command {}
 
     // EntityTypeKey for cluster sharding identification
     public static final EntityTypeKey<Command> ENTITY_KEY =
@@ -60,7 +66,7 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     /**
      * Command to retrieve order details
      */
-    public static class GetOrderDetails extends SerializableTraitClass  implements Command {
+    public static class GetOrderDetails extends SerializableTraitClass implements Command {
         public final ActorRef<OneOrder.Order> replyTo;
 
         @JsonCreator
@@ -72,7 +78,7 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     /**
      * Command to update order status
      */
-    public static class PutOrderStatus extends SerializableTraitClass  implements Command {
+    public static class PutOrderStatus extends SerializableTraitClass implements Command {
         public final OrderStatus order_status;
         public final ActorRef<OrderPutResponse> replyTo;
 
@@ -99,21 +105,9 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     }
 
     /**
-     * Command to send order details
-     */
-    public static class SendOrders extends SerializableTraitClass  implements Command {
-        public final ActorRef<OneOrder.Order> replyTo;
-
-        @JsonCreator
-        public SendOrders(@JsonProperty("replyTo") ActorRef<OneOrder.Order> replyTo) {
-            this.replyTo = replyTo;
-        }
-    }
-
-    /**
      * Command to delete/cancel an order
      */
-    public static class DeleteOrder extends SerializableTraitClass  implements Command {
+    public static class DeleteOrder extends SerializableTraitClass implements Command {
         public final ActorRef<OrderDelete.Response> replyTo;
 
         @JsonCreator
@@ -125,6 +119,7 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     // Private constructor
     private OneOrder(ActorContext<Command> context) {
         super(context);
+        getContext().getLog().info("OneOrder actor created");
     }
 
     // Factory method to create the actor
@@ -137,9 +132,8 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
                 .onMessage(GetOrderDetails.class, this::onGetOrderDetails)
-                .onMessage(PutOrderStatus.class, this::onPutOrderDetails)
+                .onMessage(PutOrderStatus.class, this::onPutOrderStatus)
                 .onMessage(SetOrder.class, this::onSetOrder)
-                .onMessage(SendOrders.class, this::onSendOrders)
                 .onMessage(DeleteOrder.class, this::onDeleteOrder)
                 .build();
     }
@@ -148,21 +142,24 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
      * Handles order deletion/cancellation requests
      */
     private Behavior<Command> onDeleteOrder(DeleteOrder command) {
+        if (this.order == null) {
+            getContext().getLog().error("Cannot delete order: order state is null");
+            command.replyTo.tell(new OrderDelete.Failure("Order not initialized"));
+            return this;
+        }
+
+        getContext().getLog().info("Processing delete request for order {}", order.order_id);
+
         if (this.order.status != OrderStatus.PLACED) {
+            getContext().getLog().warn("Order deletion failed: order status is {}, not PLACED",
+                    this.order.status);
             command.replyTo.tell(new OrderDelete.Failure(
                     "Order Deletion Failed because order status not placed"));
         } else {
             this.order.status = OrderStatus.CANCELLED;
+            getContext().getLog().info("Order {} successfully changed to CANCELLED", order.order_id);
             command.replyTo.tell(new OrderDelete.Success("Order Deleted"));
         }
-        return this;
-    }
-
-    /**
-     * Handles order details requests (SendOrders)
-     */
-    private Behavior<Command> onSendOrders(SendOrders msg) {
-        msg.replyTo.tell(this.order);
         return this;
     }
 
@@ -171,6 +168,7 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
      */
     private Behavior<Command> onSetOrder(SetOrder msg) {
         this.order = msg.order;
+        getContext().getLog().info("Order state set: {}", this.order);
         return this;
     }
 
@@ -178,6 +176,15 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
      * Handles order details requests
      */
     private Behavior<Command> onGetOrderDetails(GetOrderDetails msg) {
+        if (this.order == null) {
+            getContext().getLog().error("Cannot get order details: order state is null");
+            // Create an empty order to avoid NPE
+            Order emptyOrder = new Order(-1, -1, 0, OrderStatus.UNKNOWN, List.of());
+            msg.replyTo.tell(emptyOrder);
+            return this;
+        }
+
+        getContext().getLog().info("Sending order details for order {}", order.order_id);
         msg.replyTo.tell(this.order);
         return this;
     }
@@ -185,20 +192,32 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     /**
      * Handles order status update requests
      */
-    private Behavior<Command> onPutOrderDetails(PutOrderStatus msg) {
+    private Behavior<Command> onPutOrderStatus(PutOrderStatus msg) {
+        if (this.order == null) {
+            getContext().getLog().error("Cannot update order status: order state is null");
+            msg.replyTo.tell(new OrderPutResponse(
+                    StatusCodes.BAD_REQUEST.intValue(), "Order not initialized"));
+            return this;
+        }
+
         if (msg.order_status != OrderStatus.DELIVERED) {
+            getContext().getLog().warn("Invalid order status update request: {} -> {}",
+                    this.order.status, msg.order_status);
             msg.replyTo.tell(new OrderPutResponse(
                     StatusCodes.BAD_REQUEST.intValue(), "Invalid Status set request"));
             return this;
         }
 
         if (this.order.status != OrderStatus.PLACED) {
+            getContext().getLog().warn("Order status update failed: current status {} not PLACED",
+                    this.order.status);
             msg.replyTo.tell(new OrderPutResponse(
                     StatusCodes.BAD_REQUEST.intValue(), "Order status not PLACED"));
             return this;
         }
 
         this.order.status = OrderStatus.DELIVERED;
+        getContext().getLog().info("Order {} status updated to DELIVERED", order.order_id);
         msg.replyTo.tell(new OrderPutResponse(StatusCodes.OK.intValue(), "Order Delivered"));
         return this;
     }
