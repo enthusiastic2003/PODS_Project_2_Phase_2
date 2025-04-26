@@ -18,8 +18,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import akka.http.javadsl.unmarshalling.Unmarshaller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -32,34 +32,127 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
 
     public static class Stop implements Command {} // Stop command
 
-    private ClusterSharding sharding;
+    // New messages for tell-based state machine
+    public static class StockReservationResponse extends SerializableTraitClass implements Command {
+        public final int productId;
+        public final boolean success;
+        public final String errorMessage;
 
-    private  OrderPostRequests orderRequests;
+        @JsonCreator
+        public StockReservationResponse(
+                @JsonProperty("productId") int productId,
+                @JsonProperty("success") boolean success,
+                @JsonProperty("errorMessage") String errorMessage) {
+            this.productId = productId;
+            this.success = success;
+            this.errorMessage = errorMessage;
+        }
+    }
+
+    public static class ProductDetailsResponse extends SerializableTraitClass implements Command {
+        public final int productId;
+        public final Oneproduct.Product product;
+
+        @JsonCreator
+        public ProductDetailsResponse(
+                @JsonProperty("productId") int productId,
+                @JsonProperty("product") Oneproduct.Product product) {
+            this.productId = productId;
+            this.product = product;
+        }
+    }
+
+    // New messages for discount management
+    public static class DiscountStatusResponse extends SerializableTraitClass implements Command {
+        public final Integer userId;
+        public final boolean discountAvailed;
+
+        @JsonCreator
+        public DiscountStatusResponse(
+                @JsonProperty("userId") Integer userId,
+                @JsonProperty("discountAvailed") boolean discountAvailed) {
+            this.userId = userId;
+            this.discountAvailed = discountAvailed;
+        }
+    }
+
+    public static class ApplyDiscountResponse extends SerializableTraitClass implements Command {
+        public final Integer userId;
+        public final boolean discountApplied;
+
+        @JsonCreator
+        public ApplyDiscountResponse(
+                @JsonProperty("userId") Integer userId,
+                @JsonProperty("discountApplied") boolean discountApplied) {
+            this.userId = userId;
+            this.discountApplied = discountApplied;
+        }
+    }
+
+    // New message for payment response
+    public static class PaymentResponse extends SerializableTraitClass implements Command {
+        public final Integer userId;
+        public final boolean success;
+        public final double amount;
+
+        @JsonCreator
+        public PaymentResponse(
+                @JsonProperty("userId") Integer userId,
+                @JsonProperty("success") boolean success,
+                @JsonProperty("amount") double amount) {
+            this.userId = userId;
+            this.success = success;
+            this.amount = amount;
+        }
+    }
+
+    // Tracking state for order processing
+    private static class OrderProcessingState {
+        Map<Integer, Boolean> stockReservations = new HashMap<>();
+        Map<Integer, Oneproduct.Product> productDetails = new HashMap<>();
+        double totalCost = 0.0;
+        int pendingReservations = 0;
+        int pendingPriceQueries = 0;
+
+        public boolean allReservationsComplete() {
+            return pendingReservations == 0;
+        }
+
+        public boolean allPriceQueriesComplete() {
+            return pendingPriceQueries == 0;
+        }
+
+        public boolean allReservationsSuccessful() {
+            for (Boolean success : stockReservations.values()) {
+                if (!success) return false;
+            }
+            return true;
+        }
+    }
+
+    private ClusterSharding sharding;
+    private OrderProcessingState processingState = new OrderProcessingState();
+    private OrderPostRequests orderRequests;
     public Integer portUserService = 8080;
     public Integer portWalletService = 8082;
-    private  ActorRef<OrderPostResponse.Response> replyTo;
+    private ActorRef<OrderPostResponse.Response> replyTo;
     private Boolean discountStatus = false;
     private ActorRef<Gateway.Command> prevActor;
-    public  ActorRef<DiscountManager.Command> discountManagerRef;
+    public ActorRef<DiscountManager.Command> discountManagerRef;
     private Integer orderId;
-    private  Http http;
+    private Http http;
+    private double finalCost = 0.0;
 
     private OnePlaceOrder(ActorContext<Command> context){
-
         super(context);
         http = Http.get(context.getSystem());
         sharding = ClusterSharding.get(context.getSystem());
-
     }
 
-
     public static class placeOrderPackage extends SerializableTraitClass implements Command {
-
         public final OrderPostRequests orderRequests;
         public final Integer orderId;
         public final ActorRef<Gateway.Command> orderMap;
-
-        // Transient fields since Akka Jackson cannot serialize ActorRef or ClusterSharding directly
         public final ActorRef<OrderPostResponse.Response> replyTo;
         public final ActorRef<DiscountManager.Command> discountManagerRef;
 
@@ -74,11 +167,8 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
             this.orderRequests = orderRequests;
             this.orderId = orderId;
             this.orderMap = orderMap;
-
-            // Transient fields are set to null in deserialized version unless re-attached manually
             this.replyTo = replyTo;
             this.discountManagerRef = discountManagerRef;
-
         }
     }
 
@@ -87,76 +177,156 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
     }
 
     private Behavior<Command> processOrder() {
-
         getContext().getLog().info("Processing order: {}", orderRequests);
-
         getContext().getLog().info("ARG PORT: " + getContext().getSystem().settings().config().getInt("akka.remote.artery.canonical.port"));
 
-        if(http == null){
-            getContext().getLog().info("No HTTP connection");
+        // Step 1: Validate user - keeping the CompletableFuture approach for HTTP requests
+        CompletionStage<Boolean> validationResult = validateUser(orderRequests.user_id);
+        validationResult.thenAccept(valid -> {
+            if (valid) {
+                // Get discount status using tell pattern
+                ActorRef<OnePlaceOrder.Command> self = getContext().getSelf();
+                discountManagerRef.tell(new DiscountManager.GetDiscountStatusTell(orderRequests.user_id, discountStatus, self));
+            } else {
+                stopWithFailure("User validation failed", StatusCodes.BAD_REQUEST);
+            }
+        });
+
+        return this;
+    }
+
+    private void handleDiscountStatusResponse(DiscountStatusResponse response) {
+        discountStatus = response.discountAvailed;
+        System.out.println("User validated, discount status: " + discountStatus);
+
+        // Start the stock reservation process
+        initiateStockReservation();
+    }
+
+    private void initiateStockReservation() {
+        // Reset state for new order processing
+        processingState = new OrderProcessingState();
+        processingState.pendingReservations = orderRequests.items.size();
+
+        for (OrderItemRequests item : orderRequests.items) {
+            int pid = item.product_id;
+            int quantity = item.quantity;
+
+            // Skip if product doesn't exist
+            if (!((pid >= 101) && (pid <= 120))) {
+                processingState.stockReservations.put(pid, false);
+                processingState.pendingReservations--;
+                checkReservationCompletion();
+                continue;
+            }
+
+            // Get product entity ref
+            EntityRef<Oneproduct.Command> productEntity =
+                    sharding.entityRefFor(Oneproduct.ENTITY_KEY, String.valueOf(pid));
+
+            // Tell the product actor to reserve stock - it will respond back to us
+            ActorRef<OnePlaceOrder.Command> self = getContext().getSelf();
+            productEntity.tell(new Oneproduct.ReserveStockTell(quantity, pid, self));
         }
-        else{
-            getContext().getLog().info(http.toString());
+    }
+
+    private void handleStockReservationResponse(StockReservationResponse response) {
+        processingState.stockReservations.put(response.productId, response.success);
+        processingState.pendingReservations--;
+
+        getContext().getLog().info("Received stock reservation response for product {}: {}",
+                response.productId, response.success);
+
+        checkReservationCompletion();
+    }
+
+    private void checkReservationCompletion() {
+        if (processingState.allReservationsComplete()) {
+            getContext().getLog().info("All stock reservations complete");
+
+            if (processingState.allReservationsSuccessful()) {
+                getContext().getLog().info("All reservations successful, calculating total cost");
+                initiateTotalCostCalculation();
+            } else {
+                // If any reservation failed, release all reserved stock
+                releaseReservedStock();
+                stopWithFailure("Product not found or stock insufficient", StatusCodes.BAD_REQUEST);
+            }
+        }
+    }
+
+    private void initiateTotalCostCalculation() {
+        // Reset pending price queries counter
+        processingState.pendingPriceQueries = orderRequests.items.size();
+
+        for (OrderItemRequests item : orderRequests.items) {
+            int pid = item.product_id;
+
+            // Get product entity ref
+            EntityRef<Oneproduct.Command> productEntity =
+                    sharding.entityRefFor(Oneproduct.ENTITY_KEY, String.valueOf(pid));
+
+            // Tell the product actor to send product details
+            ActorRef<OnePlaceOrder.Command> self = getContext().getSelf();
+            productEntity.tell(new Oneproduct.GetProductDetailsTell(pid, self));
+        }
+    }
+
+    private void handleProductDetailsResponse(ProductDetailsResponse response) {
+        OrderItemRequests matchingItem = null;
+        for (OrderItemRequests item : orderRequests.items) {
+            if (item.product_id == response.productId) {
+                matchingItem = item;
+                break;
+            }
         }
 
-        // Step 1: Validate user
-        if (!validateUser(orderRequests.user_id).toCompletableFuture().join()) {
-            return stopWithFailure("User validation failed", StatusCodes.BAD_REQUEST);
-        }
-        CompletionStage<DiscountManager.GetDiscountResponse> discountStatusActual =
-                AskPattern.ask(
-                        discountManagerRef,
-                        (ActorRef<DiscountManager.GetDiscountResponse> replyTo) ->
-                                new DiscountManager.GetDiscountStatus(orderRequests.user_id, discountStatus , replyTo),
-                        Duration.ofSeconds(3),
-                        getContext().getSystem().scheduler()
-                );
-
-        discountStatus = discountStatusActual.toCompletableFuture().join().discount_availed;
-
-        System.out.println("User validated");
-
-        // Step 2: Check product availability and reserves stock atomically
-        // This new method will check availability and reserve the stock in one atomic operation
-        CompletionStage<Boolean> stockReservationResult = reserveStock(orderRequests);
-        if (!stockReservationResult.toCompletableFuture().join()) {
-            return stopWithFailure("Product not found or stock insufficient", StatusCodes.BAD_REQUEST);
-        }
-        System.out.println("Stock reserved successfully");
-
-        // Step 3: Calculate total cost and process payment
-        CompletionStage<Double> totalCostResult = calculateTotalCost(orderRequests);
-        double totalCost = totalCostResult.toCompletableFuture().join();
-
-        // Apply discount if applicable
-        CompletionStage<DiscountManager.GetDiscountResponse> discountStatusBeforeApply =
-                AskPattern.ask(
-                        discountManagerRef,
-                        (ActorRef<DiscountManager.GetDiscountResponse> replyTo) ->
-                                new DiscountManager.ApplyDiscount(orderRequests.user_id , replyTo),
-                        Duration.ofSeconds(3),
-                        getContext().getSystem().scheduler()
-                );
-
-        discountStatus = discountStatusBeforeApply.toCompletableFuture().join().discount_availed;
-        if (!discountStatus) {
-            totalCost = totalCost * 0.90;
+        if (matchingItem != null && response.product != null) {
+            processingState.productDetails.put(response.productId, response.product);
+            processingState.totalCost += response.product.price * matchingItem.quantity;
         }
 
-        // Process payment
-        if (!processPayment(orderRequests.user_id, totalCost).toCompletableFuture().join()) {
-            // If payment fails, release the reserved stock
-            releaseReservedStock(orderRequests);
-            discountManagerRef.tell(new DiscountManager.RevertDiscountLock(orderRequests.user_id));
-            return stopWithFailure("Payment processing failed", StatusCodes.BAD_REQUEST);
+        processingState.pendingPriceQueries--;
+
+        checkPriceQueryCompletion();
+    }
+
+    private void checkPriceQueryCompletion() {
+        if (processingState.allPriceQueriesComplete()) {
+            getContext().getLog().info("All price queries complete, total cost: {}", processingState.totalCost);
+
+            // Apply discount if applicable - using tell pattern
+            ActorRef<OnePlaceOrder.Command> self = getContext().getSelf();
+            discountManagerRef.tell(new DiscountManager.ApplyDiscountTell(orderRequests.user_id, self));
+        }
+    }
+
+    private void handleApplyDiscountResponse(ApplyDiscountResponse response) {
+        discountStatus = response.discountApplied;
+        finalCost = processingState.totalCost;
+
+        if (discountStatus) {
+            finalCost = finalCost * 0.90;
         }
 
+        // Process payment using HTTP client
+        processPayment(orderRequests.user_id, finalCost).thenAccept(paymentSuccess -> {
+            if (paymentSuccess) {
+                finalizeOrder(finalCost);
+            } else {
+                // If payment fails, release the reserved stock
+                releaseReservedStock();
+                discountManagerRef.tell(new DiscountManager.RevertDiscountLock(orderRequests.user_id));
+                stopWithFailure("Payment processing failed", StatusCodes.BAD_REQUEST);
+            }
+        });
+    }
+
+    private void finalizeOrder(double totalCost) {
         System.out.println("Payment processed successfully");
 
-        if(!discountStatus){
-
+        if (!discountStatus) {
             discountManagerRef.tell(new DiscountManager.ReleaseDiscount(orderRequests.user_id));
-
         }
 
         // Create order items
@@ -175,9 +345,6 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
                 OrderStatus.PLACED, orderItems);
         newOrder.tell(new OneOrder.SetOrder(order_obj));
 
-        //orderMap.put(orderId, order_obj);
-
-
         // Send success response
         OrderPostResponse.OrderSuccess obj = new OrderPostResponse.OrderSuccess(
                 orderId,
@@ -188,16 +355,29 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
         );
 
         replyTo.tell(obj);
-        prevActor.tell(
-                new Gateway.OrderSuccess(orderId)
-        );
+        prevActor.tell(new Gateway.OrderSuccess(orderId));
         System.out.println("Order placed successfully");
-        return Behaviors.stopped();
+
+        // Self-terminate after completion
+        getContext().getSelf().tell(new Stop());
+    }
+
+    private void releaseReservedStock() {
+        for (OrderItemRequests item : orderRequests.items) {
+            if (processingState.stockReservations.getOrDefault(item.product_id, false)) {
+                EntityRef<Oneproduct.Command> productEntity =
+                        sharding.entityRefFor(Oneproduct.ENTITY_KEY, String.valueOf(item.product_id));
+
+                productEntity.tell(new Oneproduct.ReleaseReservation(item.quantity));
+            }
+        }
     }
 
     private Behavior<Command> stopWithFailure(String reason, StatusCode statusCode) {
         getContext().getLog().error("Order processing failed: {}", reason);
-        replyTo.tell(new OrderPostResponse.OrderFailure(statusCode.intValue(), reason));
+        if (replyTo != null) {
+            replyTo.tell(new OrderPostResponse.OrderFailure(statusCode.intValue(), reason));
+        }
         return Behaviors.stopped();
     }
 
@@ -205,7 +385,6 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
 
     public CompletionStage<Boolean> validateUser(Integer userId) {
         String userServiceUrl = getContext().getSystem().settings().config().getString("my-app.routes.user-service");
-
 
         return http.singleRequest(HttpRequest.GET(userServiceUrl + userId))
                 .thenCompose(response -> {
@@ -226,95 +405,9 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
                 });
     }
 
-    // New method to reserve stock atomically
-    private CompletionStage<Boolean> reserveStock(OrderPostRequests request) {
-        CompletableFuture<Boolean> result = CompletableFuture.completedFuture(true);
-
-        // Process each item sequentially using CompletableFuture chaining
-        for (OrderItemRequests item : request.items) {
-            int pid = item.product_id;
-            int quantity = item.quantity;
-
-            // Skip if product doesn't exist
-            if (!((pid>=101)&&(pid<=120))) {
-                result = result.thenApply(success -> false);
-                continue;
-            }
-
-            // Get product entity ref
-            EntityRef<Oneproduct.Command> productEntity =
-                    sharding.entityRefFor(Oneproduct.ENTITY_KEY, String.valueOf(pid));
-
-            // Chain the reservation request
-            result = result.thenCompose(success -> {
-                if (!success) return CompletableFuture.completedFuture(false);
-
-                // Use the actor's "ask" pattern to try to reserve stock atomically
-                return AskPattern.<Oneproduct.Command, ProdResponses.ReservationResponse>ask(
-                        productEntity,
-                        replyTo -> new Oneproduct.ReserveStock(quantity, replyTo), // You'll need to add this command
-                        Duration.ofSeconds(3),
-                        getContext().getSystem().scheduler()
-                ).thenApply(response -> {
-                    if (response instanceof ProdResponses.ReservationSuccess) {
-                        return true;
-                    } else {
-                        return false;
-                    }
-                });
-            });
-        }
-
-        return result;
-    }
-
-    // Method to release reserved stock if payment fails
-    private void releaseReservedStock(OrderPostRequests request) {
-        for (OrderItemRequests item : request.items) {
-            EntityRef<Oneproduct.Command> productEntity =
-                    sharding.entityRefFor(Oneproduct.ENTITY_KEY, String.valueOf(item.product_id));
-
-            productEntity.tell(new Oneproduct.ReleaseReservation(item.quantity));
-        }
-    }
-
-    // Calculate total cost without debiting
-    private CompletionStage<Double> calculateTotalCost(OrderPostRequests request) {
-        double totalCost = 0;
-        CompletableFuture<Double> result = CompletableFuture.completedFuture(totalCost);
-
-        for (OrderItemRequests item : request.items) {
-            int pid = item.product_id;
-            int quantity = item.quantity;
-
-            // Chain the product detail requests
-            result = result.thenCompose(currentTotal -> {
-                EntityRef<Oneproduct.Command> productEntity =
-                        sharding.entityRefFor(Oneproduct.ENTITY_KEY, String.valueOf(pid));
-
-                return AskPattern.<Oneproduct.Command, ProductResponse>ask(
-                        productEntity,
-                        replyTo -> new Oneproduct.GetProductDetails(replyTo),
-                        Duration.ofSeconds(3),
-                        getContext().getSystem().scheduler()
-                ).thenApply(response -> {
-                    if (response instanceof ProductFound) {
-                        ProductFound found = (ProductFound) response;
-                        return currentTotal + (found.product.price * quantity);
-                    } else {
-                        return currentTotal;
-                    }
-                });
-            });
-        }
-
-        return result;
-    }
-
     // Process payment (debit from wallet)
     private CompletionStage<Boolean> processPayment(Integer userId, double amount) {
-        String walletServiceUrl =  getContext().getSystem().settings().config().getString("my-app.routes.wallet-service");
-
+        String walletServiceUrl = getContext().getSystem().settings().config().getString("my-app.routes.wallet-service");
 
         // Build JSON payload for the debit operation
         String jsonPayload = String.format("{\"action\": \"debit\", \"amount\": %d}", (int)amount);
@@ -326,7 +419,7 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
                 .withEntity(HttpEntities.create(ContentTypes.APPLICATION_JSON, jsonPayload));
 
         if(http == null){
-            getContext().getLog().warn("!!!!!!!!!!http is  null!!!!!!!!!!!");
+            getContext().getLog().warn("!!!!!!!!!!http is null!!!!!!!!!!!");
         }
 
         // Send request
@@ -341,8 +434,6 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
         });
     }
 
-
-
     @Override
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
@@ -351,6 +442,22 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
                     return Behaviors.stopped();
                 })
                 .onMessage(placeOrderPackage.class, this::onPlaceOrderPackage)
+                .onMessage(StockReservationResponse.class, msg -> {
+                    handleStockReservationResponse(msg);
+                    return this;
+                })
+                .onMessage(ProductDetailsResponse.class, msg -> {
+                    handleProductDetailsResponse(msg);
+                    return this;
+                })
+                .onMessage(DiscountStatusResponse.class, msg -> {
+                    handleDiscountStatusResponse(msg);
+                    return this;
+                })
+                .onMessage(ApplyDiscountResponse.class, msg -> {
+                    handleApplyDiscountResponse(msg);
+                    return this;
+                })
                 .build();
     }
 
@@ -363,5 +470,4 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
 
         return processOrder();
     }
-
 }

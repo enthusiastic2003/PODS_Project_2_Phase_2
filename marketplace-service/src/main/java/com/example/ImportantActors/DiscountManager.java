@@ -14,7 +14,6 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.HashMap;
 
 // Main actor class for managing user discounts
-// Main actor class for managing user discounts
 public class DiscountManager extends AbstractBehavior<DiscountManager.Command> {
 
     // Interface for response messages
@@ -43,7 +42,7 @@ public class DiscountManager extends AbstractBehavior<DiscountManager.Command> {
         }
     }
 
-    // Command to check a user's discount status
+    // Command to check a user's discount status (original ask pattern)
     public static class GetDiscountStatus extends SerializableTraitClass implements Command {
         Integer user_id;
         ActorRef<GetDiscountResponse> replyTo;
@@ -60,7 +59,24 @@ public class DiscountManager extends AbstractBehavior<DiscountManager.Command> {
         }
     }
 
-    // Command to apply a discount for a user
+    // NEW: Command to check a user's discount status (tell pattern)
+    public static class GetDiscountStatusTell extends SerializableTraitClass implements Command {
+        Integer user_id;
+        boolean presumed_discount_status;
+        ActorRef<OnePlaceOrder.Command> replyTo;
+
+        @JsonCreator
+        public GetDiscountStatusTell(
+                @JsonProperty("user_id") Integer user_id,
+                @JsonProperty("presumed_discount_status") boolean presumed_discount_status,
+                @JsonProperty("replyTo") ActorRef<OnePlaceOrder.Command> replyTo) {
+            this.user_id = user_id;
+            this.presumed_discount_status = presumed_discount_status;
+            this.replyTo = replyTo;
+        }
+    }
+
+    // Command to apply a discount for a user (original ask pattern)
     public static class ApplyDiscount extends SerializableTraitClass implements Command {
         Integer user_id;
         ActorRef<GetDiscountResponse> replyTo;
@@ -69,6 +85,20 @@ public class DiscountManager extends AbstractBehavior<DiscountManager.Command> {
         public ApplyDiscount(
                 @JsonProperty("user_id") Integer user_id,
                 @JsonProperty("replyTo") ActorRef<GetDiscountResponse> replyTo) {
+            this.user_id = user_id;
+            this.replyTo = replyTo;
+        }
+    }
+
+    // NEW: Command to apply a discount for a user (tell pattern)
+    public static class ApplyDiscountTell extends SerializableTraitClass implements Command {
+        Integer user_id;
+        ActorRef<OnePlaceOrder.Command> replyTo;
+
+        @JsonCreator
+        public ApplyDiscountTell(
+                @JsonProperty("user_id") Integer user_id,
+                @JsonProperty("replyTo") ActorRef<OnePlaceOrder.Command> replyTo) {
             this.user_id = user_id;
             this.replyTo = replyTo;
         }
@@ -111,7 +141,9 @@ public class DiscountManager extends AbstractBehavior<DiscountManager.Command> {
     public Receive<Command> createReceive() {
         return newReceiveBuilder()
                 .onMessage(ApplyDiscount.class, this::onApplyDiscount)
+                .onMessage(ApplyDiscountTell.class, this::onApplyDiscountTell)
                 .onMessage(GetDiscountStatus.class, this::onGetDiscountStatus)
+                .onMessage(GetDiscountStatusTell.class, this::onGetDiscountStatusTell)
                 .onMessage(ReleaseDiscount.class, this::onReleaseDiscount)
                 .onMessage(RevertDiscountLock.class, this::onRevertDiscountLock)
                 .build();
@@ -119,7 +151,7 @@ public class DiscountManager extends AbstractBehavior<DiscountManager.Command> {
 
     // Handler for reverting discount locks
     public Behavior<Command> onRevertDiscountLock(RevertDiscountLock revertDiscountLock) {
-        if (userToDiscount.get(revertDiscountLock.user_id) == true) {
+        if (userToDiscount.getOrDefault(revertDiscountLock.user_id, false)) {
             userToDiscount.put(revertDiscountLock.user_id, false);
         }
         return this;
@@ -147,7 +179,7 @@ public class DiscountManager extends AbstractBehavior<DiscountManager.Command> {
         return this;
     }
 
-    // Handler for discount status queries
+    // Original handler for discount status queries (ask pattern)
     public Behavior<Command> onGetDiscountStatus(GetDiscountStatus getDiscountStatus) {
         if (userToDiscount.containsKey(getDiscountStatus.user_id)) {
             boolean status = userToDiscount.get(getDiscountStatus.user_id);
@@ -160,15 +192,50 @@ public class DiscountManager extends AbstractBehavior<DiscountManager.Command> {
         return this;
     }
 
-    // Handler for applying discounts
+    // NEW: Handler for discount status queries (tell pattern)
+    public Behavior<Command> onGetDiscountStatusTell(GetDiscountStatusTell command) {
+        boolean status;
+        if (userToDiscount.containsKey(command.user_id)) {
+            status = userToDiscount.get(command.user_id);
+        } else {
+            userToDiscount.put(command.user_id, command.presumed_discount_status);
+            status = command.presumed_discount_status;
+        }
+
+        // Tell the OnePlaceOrder actor about the discount status
+        command.replyTo.tell(new OnePlaceOrder.DiscountStatusResponse(
+                command.user_id, status));
+
+        return this;
+    }
+
+    // Original handler for applying discounts (ask pattern)
     public Behavior<Command> onApplyDiscount(ApplyDiscount msg) {
         Integer user_id = msg.user_id;
-        if (userToDiscount.getOrDefault(user_id, false) == false) {
+        boolean wasDiscountAvailed = userToDiscount.getOrDefault(user_id, false);
+
+        if (!wasDiscountAvailed) {
             userToDiscount.put(user_id, true);
             msg.replyTo.tell(new GetDiscountResponse(false));
         } else {
             msg.replyTo.tell(new GetDiscountResponse(true));
         }
+        return this;
+    }
+
+    // NEW: Handler for applying discounts (tell pattern)
+    public Behavior<Command> onApplyDiscountTell(ApplyDiscountTell command) {
+        Integer user_id = command.user_id;
+        boolean wasDiscountAvailed = userToDiscount.getOrDefault(user_id, false);
+
+        if (!wasDiscountAvailed) {
+            userToDiscount.put(user_id, true);
+        }
+
+        // Tell the OnePlaceOrder actor about the discount application
+        command.replyTo.tell(new OnePlaceOrder.ApplyDiscountResponse(user_id, !wasDiscountAvailed));
+
+
         return this;
     }
 }

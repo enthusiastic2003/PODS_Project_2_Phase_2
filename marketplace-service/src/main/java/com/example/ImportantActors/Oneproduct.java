@@ -20,6 +20,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  */
 public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
 
+    public static final EntityTypeKey<Oneproduct.Command> ENTITY_KEY =
+            EntityTypeKey.create(Oneproduct.Command.class, "OneProduct");
+
     /**
      * Internal data structure that holds product information.
      * Note that stock_quantity is mutable while other properties are immutable.
@@ -60,13 +63,6 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
     public interface Command extends JsonSerializable { }
 
     /**
-     * Entity type key used for cluster sharding configuration.
-     * This allows the system to distribute product actors across the cluster.
-     */
-    public static final EntityTypeKey<Command> ENTITY_KEY =
-            EntityTypeKey.create(Command.class, "Oneproduct");
-
-    /**
      * Command to reserve a specific quantity of stock for an order being processed.
      * This is typically used in the first step of order processing before confirming payment.
      */
@@ -80,6 +76,46 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
         public ReserveStock(@JsonProperty("quantity") int quantity,
                             @JsonProperty("replyTo") ActorRef<ProdResponses.ReservationResponse> replyTo) {
             this.quantity = quantity;
+            this.replyTo = replyTo;
+        }
+    }
+
+    /**
+     * New Tell-based command to reserve stock
+     */
+    public static class ReserveStockTell implements Command {
+        @JsonProperty("quantity")
+        public final int quantity;                                   // Quantity to reserve
+        @JsonProperty("productId")
+        public final int productId;                                  // Product ID for response identification
+        @JsonProperty("replyTo")
+        public final ActorRef<OnePlaceOrder.Command> replyTo;        // Actor to tell the response to
+
+        @JsonCreator
+        public ReserveStockTell(
+                @JsonProperty("quantity") int quantity,
+                @JsonProperty("productId") int productId,
+                @JsonProperty("replyTo") ActorRef<OnePlaceOrder.Command> replyTo) {
+            this.quantity = quantity;
+            this.productId = productId;
+            this.replyTo = replyTo;
+        }
+    }
+
+    /**
+     * New Tell-based command to get product details
+     */
+    public static class GetProductDetailsTell implements Command {
+        @JsonProperty("productId")
+        public final int productId;                                 // Product ID for response identification
+        @JsonProperty("replyTo")
+        public final ActorRef<OnePlaceOrder.Command> replyTo;       // Actor to tell the response to
+
+        @JsonCreator
+        public GetProductDetailsTell(
+                @JsonProperty("productId") int productId,
+                @JsonProperty("replyTo") ActorRef<OnePlaceOrder.Command> replyTo) {
+            this.productId = productId;
             this.replyTo = replyTo;
         }
     }
@@ -228,6 +264,8 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
                         return this;
                     }
                 })
+                .onMessage(ReserveStockTell.class, this::onReserveStockTell)
+                .onMessage(GetProductDetailsTell.class, this::onGetProductDetailsTell)
                 .onMessage(ReleaseReservation.class, cmd -> {
                     Product product = this.product;
                     if (product != null) {
@@ -241,6 +279,44 @@ public class Oneproduct extends AbstractBehavior<Oneproduct.Command> {
                     return Behaviors.same();
                 })
                 .build();
+    }
+
+    /**
+     * Handler for ReserveStockTell command.
+     * Processes reservation and tells the result back.
+     */
+    private Behavior<Command> onReserveStockTell(ReserveStockTell cmd) {
+        Product product = this.product;
+        boolean success = false;
+        String errorMessage = "";
+
+        if (product == null) {
+            errorMessage = "Product not found";
+        } else if (product.stock_quantity >= cmd.quantity) {
+            // If we have enough stock, decrease it and flag success
+            product.stock_quantity -= cmd.quantity;
+            success = true;
+        } else {
+            errorMessage = "Insufficient stock";
+        }
+
+        // Tell the response back to the calling actor
+        cmd.replyTo.tell(new OnePlaceOrder.StockReservationResponse(
+                cmd.productId, success, errorMessage));
+
+        return this;
+    }
+
+    /**
+     * Handler for GetProductDetailsTell command.
+     * Sends product details back via tell pattern.
+     */
+    private Behavior<Command> onGetProductDetailsTell(GetProductDetailsTell cmd) {
+        // Tell the product details back to the calling actor
+        cmd.replyTo.tell(new OnePlaceOrder.ProductDetailsResponse(
+                cmd.productId, this.product));
+
+        return this;
     }
 
     /**
