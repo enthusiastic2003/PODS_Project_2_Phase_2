@@ -21,6 +21,7 @@ com/example/ImportantActors/Oneproduct$ReleaseReservation.class
 com/example/Responses/OrderPostResponse$OrderFailure.class
 com/example/ImportantActors/OneDeleteOrder$WalletUpdated.class
 com/example/ImportantActors/OnePlaceOrder$StockReservationResponse.class
+com/example/ImportantActors/OnePlaceOrder$stopWithFailureMessage.class
 com/example/ImportantActors/OneOrder$DeleteOrder.class
 com/example/Gateway/OrderMapActor$UpdateOrderMap.class
 com/example/ImportantActors/DiscountManager$GetDiscountStatus.class

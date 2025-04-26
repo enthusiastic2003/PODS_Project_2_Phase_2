@@ -72,6 +72,17 @@ public class Guardian {
                     )
             );
 
+            for (int i = 1; i <= 50; i++) {
+                ActorRef<OneDeleteOrder.Command> ref = context.spawn(OneDeleteOrder.create(), "DeleteOrder" + i);
+                context.getSystem().receptionist().tell(Receptionist.register(serviceKey2, ref));
+            }
+
+            for (int i = 1; i <= 50; i++) {
+                ActorRef<OnePlaceOrder.Command> ref = context.spawn(OnePlaceOrder.create(), "PlaceOrder" + i);
+                context.getSystem().receptionist().tell(Receptionist.register(serviceKey, ref));
+            }
+
+
 
             if (port == 8083) {
 
@@ -86,6 +97,7 @@ public class Guardian {
                     );
                     // or create a temporary actor to receive Ack
                 }
+
                 //Init Gateway actor
                 ActorRef<Gateway.Command> gatewayRef = context.spawn(Gateway.create(serviceKey, serviceKey2), "Gateway");
 
@@ -93,12 +105,7 @@ public class Guardian {
 
             }
 
-
-
-            if(port == 8084){
-
-
-
+            if (port == 8084){
                 Map<Integer, Oneproduct.Product> products2 = loadProducts(context, 111, 120);
 
                 for(Integer productId : products2.keySet()) {
@@ -109,24 +116,9 @@ public class Guardian {
                     );
                     // or create a temporary actor to receive Ack
                 }
-
-
             }
 
-            if (port == 8085) {
-                for (int i = 1; i <= 50; i++) {
-                    ActorRef<OneDeleteOrder.Command> ref = context.spawn(OneDeleteOrder.create(), "DeleteOrder" + i);
-                    context.getSystem().receptionist().tell(Receptionist.register(serviceKey2, ref));
-                }
 
-            }
-
-            if(port == 8086) {
-                for (int i = 1; i <= 50; i++) {
-                    ActorRef<OnePlaceOrder.Command> ref = context.spawn(OnePlaceOrder.create(), "PlaceOrder" + i);
-                    context.getSystem().receptionist().tell(Receptionist.register(serviceKey, ref));
-                }
-            }
 
 
             return Behaviors.empty();

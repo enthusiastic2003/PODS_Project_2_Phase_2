@@ -18,6 +18,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import akka.http.javadsl.unmarshalling.Unmarshaller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.awt.event.TextEvent;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -172,6 +173,20 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
         }
     }
 
+    public static class stopWithFailureMessage extends SerializableTraitClass implements Command {
+
+        String reason;
+        int statusCode;
+
+        @JsonCreator
+        public stopWithFailureMessage(@JsonProperty("reason") String reason, @JsonProperty("statusCode") int statusCode) {
+            this.reason = reason;
+            this.statusCode = statusCode;
+
+        }
+
+    }
+
     public static Behavior<Command> create() {
         return Behaviors.setup(context -> new OnePlaceOrder(context));
     }
@@ -188,7 +203,8 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
                 ActorRef<OnePlaceOrder.Command> self = getContext().getSelf();
                 discountManagerRef.tell(new DiscountManager.GetDiscountStatusTell(orderRequests.user_id, discountStatus, self));
             } else {
-                stopWithFailure("User validation failed", StatusCodes.BAD_REQUEST);
+
+                getContext().getSelf().tell(new stopWithFailureMessage("User Validation Failed", 400));
             }
         });
 
@@ -314,10 +330,14 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
             if (paymentSuccess) {
                 finalizeOrder(finalCost);
             } else {
+                System.out.println("Payment processing failure");
                 // If payment fails, release the reserved stock
                 releaseReservedStock();
+                System.out.println("Payment processing failure 2 ");
                 discountManagerRef.tell(new DiscountManager.RevertDiscountLock(orderRequests.user_id));
-                stopWithFailure("Payment processing failed", StatusCodes.BAD_REQUEST);
+//                replyTo.tell();
+                System.out.println("Payment processing failure 3 ");
+                getContext().getSelf().tell(new stopWithFailureMessage("Payment Processing Failed", 400));
             }
         });
     }
@@ -375,6 +395,8 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
 
     private Behavior<Command> stopWithFailure(String reason, StatusCode statusCode) {
         getContext().getLog().error("Order processing failed: {}", reason);
+        System.out.println("Order processing failed: "+  reason);
+
         if (replyTo != null) {
             replyTo.tell(new OrderPostResponse.OrderFailure(statusCode.intValue(), reason));
         }
@@ -458,6 +480,11 @@ public class OnePlaceOrder extends AbstractBehavior<OnePlaceOrder.Command> {
                     handleApplyDiscountResponse(msg);
                     return this;
                 })
+                .onMessage(stopWithFailureMessage.class, msg -> {
+
+                    stopWithFailure(msg.reason, StatusCodes.get(msg.statusCode));
+                    return this;
+                    })
                 .build();
     }
 

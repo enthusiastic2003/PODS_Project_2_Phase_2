@@ -56,20 +56,20 @@ order_id_list.append(resp_po.json()['order_id'])
 
 print(order_id_list)
 
-for order_id in order_id_list:
-    resp = delete_order(order_id)
-    if resp.status_code == 200:
-        print(f"Order {order_id} deleted successfully.")
-    else:
-        print(f"Failed to delete order {order_id}. Status code: {resp.status_code}")
-    resp = delete_order(order_id)
-    if resp.status_code == 200:
-        print(f"Order {order_id} deleted successfully.")
-    else:
-        print(f"Failed to delete order {order_id}. Status code: {resp.status_code}")
+# for order_id in order_id_list:
+#     resp = delete_order(order_id)
+#     if resp.status_code == 200:
+#         print(f"Order {order_id} deleted successfully.")
+#     else:
+#         print(f"Failed to delete order {order_id}. Status code: {resp.status_code}")
+#     resp = delete_order(order_id)
+#     if resp.status_code == 200:
+#         print(f"Order {order_id} deleted successfully.")
+#     else:
+#         print(f"Failed to delete order {order_id}. Status code: {resp.status_code}")
 
 
-thread_count = 10
+thread_count = len(order_id_list)
 threads = []
 successful_deletions = 0
 def delete_order_thread(order_id, attempts=5):
@@ -77,14 +77,15 @@ def delete_order_thread(order_id, attempts=5):
     for _ in range(attempts):
         resp = delete_order(order_id)
         print(resp)
-        resp = delete_order(order_id-5)
+        resp = delete_order(order_id)
         print(resp)
 
         
 
 for i in range(thread_count):
     t = Thread(target=delete_order_thread, kwargs={
-        "order_id": order_id
+        "order_id": order_id_list[i],
+        "attempts": 5
     })
     threads.append(t)
     t.start()
