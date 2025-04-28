@@ -187,25 +187,17 @@ private Behavior<Command> onPlaceOrder(PlaceOrder msg) {
 }
 
 // Handler for order retrieval requests
+// Handler for order retrieval requests
 private Behavior<Command> onGetOrder(GetOrder msg) {
     if (orderMap.containsKey(msg.orderId)) {
         // Get sharded entity reference for the order
         EntityRef<OneOrder.Command> orderEntity = sharding.entityRefFor(
-            OneOrder.ENTITY_KEY, 
-            String.valueOf(msg.orderId)
-        );
-        
-        // Async ask pattern to get order details
-        CompletionStage<OneOrder.Order> result = AskPattern.ask(
-            orderEntity,
-            replyTo -> new OneOrder.GetOrderDetails(replyTo),
-            Duration.ofSeconds(3),  // Timeout for safety
-            getContext().getSystem().scheduler()
+                OneOrder.ENTITY_KEY,
+                String.valueOf(msg.orderId)
         );
 
-        // Blocking wait for result (anti-pattern in reactive systems)
-        OneOrder.Order order = result.toCompletableFuture().join();
-        msg.replyTo.tell(new OrderGetResponse.OrderSuccess(order));
+        // Use tell pattern instead of ask pattern
+        orderEntity.tell(new OneOrder.GetOrderDetails(msg.replyTo));
     } else {
         msg.replyTo.tell(new OrderGetResponse.OrderFailure());
     }

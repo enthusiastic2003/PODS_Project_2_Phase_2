@@ -10,6 +10,7 @@ import akka.http.javadsl.model.HttpMethods;
 import akka.http.javadsl.model.HttpRequest;
 import com.example.Gateway.Gateway;
 import com.example.Responses.OrderDelete;
+import com.example.Responses.OrderGetResponse;
 import com.example.SerializableTraitClass;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -20,6 +21,7 @@ import org.slf4j.LoggerFactory;
 import akka.cluster.sharding.typed.javadsl.ClusterSharding;
 import akka.cluster.sharding.typed.javadsl.EntityRef;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -130,6 +132,7 @@ public class OneDeleteOrder extends AbstractBehavior<OneDeleteOrder.Command> {
 
 
     // Handler for starting the deletion process
+// Handler for starting the deletion process
     private Behavior<Command> onStartDeleteProcess(StartDeleteProcess cmd) {
         logger.info("Starting delete process for order: {}", msg.order_id);
 
@@ -139,14 +142,25 @@ public class OneDeleteOrder extends AbstractBehavior<OneDeleteOrder.Command> {
                 String.valueOf(msg.order_id)
         );
 
-        // Create an adapter that will convert the OneOrder.Order response to our OrderDetailsReceived command
-        ActorRef<OneOrder.Order> orderAdapter = getContext().messageAdapter(
-                OneOrder.Order.class,
-                OrderDetailsReceived::new
+        // Create a new message adapter that converts from OrderGetResponse.Response to OrderDetailsReceived
+        ActorRef<OrderGetResponse.Response> responseAdapter = getContext().messageAdapter(
+                OrderGetResponse.Response.class,
+                response -> {
+                    if (response instanceof OrderGetResponse.OrderSuccess) {
+                        return new OrderDetailsReceived(((OrderGetResponse.OrderSuccess) response).order);
+                    } else {
+                        // Handle failure case - create a dummy order
+                        logger.error("Failed to get order details for order ID: {}", msg.order_id);
+                        List<OrderItem> emptyItems = new ArrayList<>();
+                        return new OrderDetailsReceived(
+                                new OneOrder.Order(-1, -1, 0, OrderStatus.UNKNOWN, emptyItems)
+                        );
+                    }
+                }
         );
 
-        // Request the order details
-        orderEntity.tell(new OneOrder.GetOrderDetails(orderAdapter));
+        // Request the order details using the adapter
+        orderEntity.tell(new OneOrder.GetOrderDetails(responseAdapter));
 
         return this;
     }
@@ -157,6 +171,11 @@ public class OneDeleteOrder extends AbstractBehavior<OneDeleteOrder.Command> {
 
         // Store order details for later use
         this.orderDetails = cmd.order;
+
+        if(this.orderDetails.order_id<0){
+            this.msg.replyTo.tell(new OrderDelete.Failure("Order not found " +  this.msg.order_id));
+            return  Behaviors.empty();
+        }
 
         // Step 2: Send delete command to order entity
         EntityRef<OneOrder.Command> orderEntity = sharding.entityRefFor(

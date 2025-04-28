@@ -6,6 +6,7 @@ import akka.actor.typed.javadsl.*;
 import akka.cluster.sharding.typed.javadsl.EntityTypeKey;
 import akka.http.javadsl.model.StatusCodes;
 import com.example.Responses.OrderDelete;
+import com.example.Responses.OrderGetResponse;
 import com.example.Responses.OrderPutResponse;
 import com.example.SerializableTraitClass;
 import com.fasterxml.jackson.annotation.JsonCreator;
@@ -66,11 +67,14 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     /**
      * Command to retrieve order details
      */
+    /**
+     * Command to retrieve order details
+     */
     public static class GetOrderDetails extends SerializableTraitClass implements Command {
-        public final ActorRef<OneOrder.Order> replyTo;
+        public final ActorRef<OrderGetResponse.Response> replyTo;
 
         @JsonCreator
-        public GetOrderDetails(@JsonProperty("replyTo") ActorRef<OneOrder.Order> replyTo) {
+        public GetOrderDetails(@JsonProperty("replyTo") ActorRef<OrderGetResponse.Response> replyTo) {
             this.replyTo = replyTo;
         }
     }
@@ -175,17 +179,18 @@ public class OneOrder extends AbstractBehavior<OneOrder.Command> {
     /**
      * Handles order details requests
      */
+    /**
+     * Handles order details requests
+     */
     private Behavior<Command> onGetOrderDetails(GetOrderDetails msg) {
         if (this.order == null) {
             getContext().getLog().error("Cannot get order details: order state is null");
-            // Create an empty order to avoid NPE
-            Order emptyOrder = new Order(-1, -1, 0, OrderStatus.UNKNOWN, List.of());
-            msg.replyTo.tell(emptyOrder);
+            msg.replyTo.tell(new OrderGetResponse.OrderFailure());
             return this;
         }
 
         getContext().getLog().info("Sending order details for order {}", order.order_id);
-        msg.replyTo.tell(this.order);
+        msg.replyTo.tell(new OrderGetResponse.OrderSuccess(this.order));
         return this;
     }
 
