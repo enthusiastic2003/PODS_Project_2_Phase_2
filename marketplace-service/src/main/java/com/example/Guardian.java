@@ -72,12 +72,12 @@ public class Guardian {
                     )
             );
 
-            for (int i = 1; i <= 50; i++) {
+            for (int i = 1; i <= 80; i++) {
                 ActorRef<OneDeleteOrder.Command> ref = context.spawn(OneDeleteOrder.create(), "DeleteOrder" + i);
                 context.getSystem().receptionist().tell(Receptionist.register(serviceKey2, ref));
             }
 
-            for (int i = 1; i <= 50; i++) {
+            for (int i = 1; i <= 80; i++) {
                 ActorRef<OnePlaceOrder.Command> ref = context.spawn(OnePlaceOrder.create(), "PlaceOrder" + i);
                 context.getSystem().receptionist().tell(Receptionist.register(serviceKey, ref));
             }
